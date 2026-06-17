@@ -448,7 +448,7 @@ def _fit_multipole_from_vz_scan(r, vz, atol=None, rtol=1e-10):
     }
 
 
-def Vz_loss_kick_from_field(
+def offset_Vz_loss_kick_from_field(
     datapath,
     field_saved_fname,
     f_010,
@@ -989,7 +989,7 @@ if __name__ == "__main__":
 
 
 
-                r_m_E1, Vz_vert_E1, loss_vert_E1, kick_vert_E1, pw_E1, multipole_fit_E1 = Vz_loss_kick_from_field(
+                r_m_E1, Vz_vert_E1, loss_vert_E1, kick_vert_E1, pw_E1, multipole_fit_E1 = offset_Vz_loss_kick_from_field(
                     datapath,
                     field_saved_fname_E1,
                     f_E1,
@@ -1009,7 +1009,7 @@ if __name__ == "__main__":
                 print(multipole_fit_E1["quadrupole"])
                 print(multipole_fit_E1["fractions"])
 
-                r_m_E2, Vz_vert_E2, loss_vert_E2, kick_vert_E2, pw_E2, multipole_fit_E2 = Vz_loss_kick_from_field(
+                r_m_E2, Vz_vert_E2, loss_vert_E2, kick_vert_E2, pw_E2, multipole_fit_E2 = offset_Vz_loss_kick_from_field(
                     datapath,
                     field_saved_fname_E2,
                     f_E2,
@@ -1028,7 +1028,7 @@ if __name__ == "__main__":
                 print(multipole_fit_E2["quadrupole"])
                 print(multipole_fit_E2["fractions"])
 
-                r_m_plus, Vz_vert_plus, loss_vert_plus, kick_vert_plus, pw_plus, multipole_fit_plus = Vz_loss_kick_from_field(
+                r_m_plus, Vz_vert_plus, loss_vert_plus, kick_vert_plus, pw_plus, multipole_fit_plus = offset_Vz_loss_kick_from_field(
                     datapath,
                     field_saved_fname_plus,
                     f_010,
@@ -1047,7 +1047,7 @@ if __name__ == "__main__":
                 print(multipole_fit_plus["quadrupole"])
                 print(multipole_fit_plus["fractions"])
 
-                r_m_minus, Vz_vert_minus, loss_vert_minus, kick_vert_minus, pw_minus, multipole_fit_minus = Vz_loss_kick_from_field(
+                r_m_minus, Vz_vert_minus, loss_vert_minus, kick_vert_minus, pw_minus, multipole_fit_minus = offset_Vz_loss_kick_from_field(
                     datapath,
                     field_saved_fname_minus,
                     f_010,
