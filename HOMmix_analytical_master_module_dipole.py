@@ -364,33 +364,225 @@ def accelerating_voltage_complex(Ez_line, z_m, omega, beta=1.0):
     Ez_line = np.asarray(Ez_line, float)
     return np.trapz(Ez_line * np.exp(1j*omega*zc/(beta*C0)), zc)
 
+def kick_from_Ez_field(
+    Ez,
+    f_010,
+    f_mnp,
+    l_factor,
+    Req_m,
+    *,
+    axis="y",
+    fit_pixels=8,
+    beta=1.0,
+    save_directory=None,
+    label="",
+):
+    """
+    Dipole kick diagnostic from Ez.
 
-def kick_from_Ez_field(Ez, f_010, f_mnp, l_factor, Req_m, *, axis="y", fit_pixels=8, beta=1.0):
+    Uses f_mnp, not f_010, for the Panofsky-Wenzel factor:
+
+        V_perp = (c / omega_mnp) dVz/dr
+
+    Also compares with the offset method:
+
+        Ez(r,z) -> Vz(r) -> loss(r) = |Vz(r)|^2 / 4
+        kick_loss_equiv(r) = (c / omega_mnp) |Vz(r)| / |r|
+
+    The loss-derived method is only expected to agree near the axis when
+    Vz(r) is approximately linear in r.
+    """
+
     Ez = np.nan_to_num(np.asarray(Ez, float), nan=0.0)
+
     nx, ny, nz = Ez.shape
-    ix0, iy0 = nx//2, ny//2
-    L = (C0/f_010)/2.0 * float(l_factor)
+    ix0, iy0 = nx // 2, ny // 2
+
+    L = (C0 / f_010) / 2.0 * float(l_factor)
     z_m = np.linspace(0.0, L, nz)
-    dx = 2.0*Req_m/(nx-1); dy = 2.0*Req_m/(ny-1)
-    omega = 2*np.pi*f_mnp
+
+    dx = 2.0 * Req_m / (nx - 1)
+    dy = 2.0 * Req_m / (ny - 1)
+    dr = dy if axis == "y" else dx
+
+    omega = 2.0 * np.pi * float(f_mnp)
+
+    max_pix = min(fit_pixels, iy0 - 1 if axis == "y" else ix0 - 1)
+
     vals = []
-    max_pix = min(fit_pixels, ix0-1 if axis == "x" else iy0-1)
-    for dp in range(-max_pix, max_pix+1):
-        if dp == 0: continue
+
+    for dp in range(-max_pix, max_pix + 1):
+        if dp == 0:
+            continue
+
         if axis == "y":
-            r = dp*dy; line = Ez[ix0, iy0+dp, :]
+            r = dp * dy
+            line = Ez[ix0, iy0 + dp, :]
+        elif axis == "x":
+            r = dp * dx
+            line = Ez[ix0 + dp, iy0, :]
         else:
-            r = dp*dx; line = Ez[ix0+dp, iy0, :]
+            raise ValueError("axis must be 'x' or 'y'")
+
         V = accelerating_voltage_complex(line, z_m, omega, beta=beta)
         vals.append((r, V))
+
     r = np.array([v[0] for v in vals], float)
     Vc = np.array([v[1] for v in vals], complex)
-    # Fit real and imaginary separately; gradient magnitude is phase-invariant.
+
+    order = np.argsort(r)
+    r = r[order]
+    Vc = Vc[order]
+
+    # ------------------------------------------------------------------
+    # Method 1: direct PW gradient fit
+    # ------------------------------------------------------------------
     gr = np.polyfit(r, Vc.real, 1)[0]
     gi = np.polyfit(r, Vc.imag, 1)[0]
-    dVdr = gr + 1j*gi
-    Vperp_per_m_offset = (C0/omega) * dVdr  # V/m_offset
-    # Requested units: V/C/m/m == V/C/m^2. This is the PW transverse voltage
-    # gradient per unit charge for a 1 C normalisation of the field map.
-    kick_V_per_C_per_m2 = abs(Vperp_per_m_offset)
-    return {"r_m": r, "Vz_complex_V": Vc, "dVz_dr_V_per_m": dVdr, "Vperp_per_m_offset_V_per_m": Vperp_per_m_offset, "kick_V_per_C_per_m_per_m": kick_V_per_C_per_m2, "transverse_pixel_m": dx if axis == "x" else dy, "longitudinal_pixel_m": L/(nz-1), "axis": axis}
+
+    dVz_dr = gr + 1j * gi
+
+    Vperp_per_m_offset = (C0 / omega) * dVz_dr
+    kick_pw_fit = abs(Vperp_per_m_offset)
+
+    # Local PW estimate at each offset.
+    dVz_dr_local = np.gradient(Vc, r)
+    kick_pw_local = np.abs((C0 / omega) * dVz_dr_local)
+
+    # ------------------------------------------------------------------
+    # Method 2: Ez(r) -> Vz(r) -> loss -> kick-equivalent
+    # ------------------------------------------------------------------
+    Vz_abs = np.abs(Vc)
+
+    loss = Vz_abs**2 / 4.0
+
+    kick_loss_equiv = np.full_like(Vz_abs, np.nan, dtype=float)
+
+    nonzero = ~np.isclose(r, 0.0)
+
+    # Since loss = |Vz|^2 / 4, then |Vz| = 2 sqrt(loss).
+    # For a dipole near-axis Vz ~ r dVz/dr, so:
+    # kick = (c/omega) |dVz/dr| ~ (c/omega) |Vz|/|r|.
+    kick_loss_equiv[nonzero] = (C0 / omega) * Vz_abs[nonzero] / np.abs(r[nonzero])
+
+    # ------------------------------------------------------------------
+    # Diagnostics
+    # ------------------------------------------------------------------
+    if save_directory is not None:
+        save_directory = Path(save_directory)
+        save_directory.mkdir(parents=True, exist_ok=True)
+
+        tag = f"{label}_" if label else ""
+
+        np.savez_compressed(
+            save_directory / f"{tag}kick_diagnostics.npz",
+            r_m=r,
+            Vz_complex=Vc,
+            Vz_abs=Vz_abs,
+            loss=loss,
+            dVz_dr=dVz_dr,
+            dVz_dr_local=dVz_dr_local,
+            kick_pw_fit=kick_pw_fit,
+            kick_pw_local=kick_pw_local,
+            kick_loss_equiv=kick_loss_equiv,
+            transverse_pixel_m=dr,
+            longitudinal_pixel_m=L / (nz - 1),
+            f_mnp=f_mnp,
+            omega=omega,
+            axis=axis,
+        )
+
+        # Ez transverse and longitudinal diagnostic.
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4), constrained_layout=True)
+
+        im0 = axes[0].imshow(Ez[:, :, nz // 2].T, origin="lower", aspect="equal")
+        axes[0].set_title("Ez transverse mid")
+        axes[0].set_xlabel("x pixel")
+        axes[0].set_ylabel("y pixel")
+        fig.colorbar(im0, ax=axes[0])
+
+        im1 = axes[1].imshow(Ez[ix0, :, :], origin="lower", aspect="auto")
+        axes[1].set_title("Ez longitudinal mid")
+        axes[1].set_xlabel("z pixel")
+        axes[1].set_ylabel("y pixel")
+        fig.colorbar(im1, ax=axes[1])
+
+        fig.suptitle(f"{label}: Ez slices")
+        fig.savefig(save_directory / f"{tag}Ez_slices.png", dpi=220)
+        plt.close(fig)
+
+        # Complex Vz and fit.
+        fig, ax = plt.subplots(figsize=(7, 4), constrained_layout=True)
+
+        ax.plot(r * 1e3, Vc.real, "o-", label=r"Re$(V_z)$")
+        ax.plot(r * 1e3, Vc.imag, "o-", label=r"Im$(V_z)$")
+
+        ax.plot(r * 1e3, np.polyval(np.polyfit(r, Vc.real, 1), r), "--", label="Re fit")
+        ax.plot(r * 1e3, np.polyval(np.polyfit(r, Vc.imag, 1), r), "--", label="Im fit")
+
+        ax.axvline(0.0, color="k", alpha=0.3)
+        ax.set_xlabel("Offset [mm]")
+        ax.set_ylabel(r"$V_z$ [V]")
+        ax.set_title(f"{label}: complex Vz fit")
+        ax.legend()
+
+        fig.savefig(save_directory / f"{tag}Vz_complex_fit.png", dpi=220)
+        plt.close(fig)
+
+        # |Vz|
+        fig, ax = plt.subplots(figsize=(7, 4), constrained_layout=True)
+
+        ax.plot(r * 1e3, Vz_abs, "o-")
+        ax.axvline(0.0, color="k", alpha=0.3)
+        ax.set_xlabel("Offset [mm]")
+        ax.set_ylabel(r"$|V_z|$ [V]")
+        ax.set_title(f"{label}: offset voltage")
+
+        fig.savefig(save_directory / f"{tag}r_vs_Vz_abs.png", dpi=220)
+        plt.close(fig)
+
+        # Loss.
+        fig, ax = plt.subplots(figsize=(7, 4), constrained_layout=True)
+
+        ax.plot(r * 1e3, loss, "o-")
+        ax.axvline(0.0, color="k", alpha=0.3)
+        ax.set_xlabel("Offset [mm]")
+        ax.set_ylabel(r"$|V_z|^2/4$")
+        ax.set_title(f"{label}: loss-like offset scan")
+
+        fig.savefig(save_directory / f"{tag}r_vs_loss.png", dpi=220)
+        plt.close(fig)
+
+        # Kick comparison.
+        fig, ax = plt.subplots(figsize=(7, 4), constrained_layout=True)
+
+        ax.plot(r * 1e3, kick_pw_local, "o-", label="PW local gradient")
+        ax.plot(r * 1e3, kick_loss_equiv, "s-", label=r"$V_z \rightarrow$ loss equivalent")
+        ax.axhline(kick_pw_fit, color="k", ls="--", alpha=0.6, label="PW linear fit")
+
+        ax.axvline(0.0, color="k", alpha=0.3)
+        ax.set_xlabel("Offset [mm]")
+        ax.set_ylabel(r"Kick [$\mathrm{V/C/m^2}$]")
+        ax.set_title(f"{label}: kick comparison")
+        ax.legend()
+
+        fig.savefig(save_directory / f"{tag}r_vs_kick_comparison.png", dpi=220)
+        plt.close(fig)
+
+    return {
+        "r_m": r,
+        "Vz_complex_V": Vc,
+        "Vz_abs_V": Vz_abs,
+        "loss": loss,
+        "dVz_dr_V_per_m": dVz_dr,
+        "dVz_dr_local_V_per_m": dVz_dr_local,
+        "Vperp_per_m_offset_V_per_m": Vperp_per_m_offset,
+        "kick_V_per_C_per_m_per_m": kick_pw_fit,
+        "kick_pw_local_V_per_C_per_m_per_m": kick_pw_local,
+        "kick_loss_equiv_V_per_C_per_m_per_m": kick_loss_equiv,
+        "transverse_pixel_m": dr,
+        "longitudinal_pixel_m": L / (nz - 1),
+        "axis": axis,
+        "f_mnp_Hz": float(f_mnp),
+        "omega_rad_s": omega,
+    }

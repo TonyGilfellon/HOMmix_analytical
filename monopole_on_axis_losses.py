@@ -621,26 +621,7 @@ def _plot_slice_group(slice_dict: dict[str, np.ndarray], save_directory_fname: s
             vmax = max(float(np.nanmax(np.abs(x))) for x in row_data) or 1.0
             for c, (key, arr) in enumerate(zip(row_keys, row_data)):
                 ax = axes[r, c]
-                plot_arr = arr.T if stype.startswith("iris") or stype == "transverse_mid" else arr
-
-                if r == 3:  # |E| row
-                    im = ax.imshow(
-                        plot_arr,
-                        origin="lower",
-                        cmap="viridis",
-                        vmin=0.0,
-                        vmax=np.nanmax(plot_arr),
-                        aspect="auto",
-                    )
-                else:
-                    im = ax.imshow(
-                        plot_arr,
-                        origin="lower",
-                        cmap="RdBu_r",
-                        vmin=-vmax,
-                        vmax=vmax,
-                        aspect="auto",
-                    )
+                im = ax.imshow(arr.T if stype.startswith("iris") or stype == "transverse_mid" else arr, origin="lower", cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="auto")
                 ax.set_title(key)
                 ax.set_xticks([]); ax.set_yticks([])
                 ax.text(0.02, 0.98, f"max={np.nanmax(np.abs(arr)):.2e}", transform=ax.transAxes, ha="left", va="top", fontsize=8, bbox=dict(facecolor="white", alpha=0.65, edgecolor="none"))
@@ -655,8 +636,9 @@ def _plot_slice_group(slice_dict: dict[str, np.ndarray], save_directory_fname: s
 
 @dataclass
 class RunConfig:
-    datapath: Path = Path(r"D:\PhD\HOMmix\HOMmix_analytical\data")
+    datapath: Path = Path(r"D:\PhD\HOMmix\HOMmix_analytical")
     savepath: Path = Path(r"D:\PhD\HOMmix\HOMmix_analytical\analysis\homotypic_monopoles")
+
 
     m_max: int = 0
     n_max: int = 3

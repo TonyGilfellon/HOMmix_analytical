@@ -81,11 +81,12 @@ def analyse_crossing(key: str, crossing: dict, data_dict: dict, save_root: Path,
     Req_m = hamm.pillbox_radius_from_freq(f_010)
 
     kick_jobs = {
-        "E1": (field_data["E1_Ez"], float(data_dict["TM"][mode_i]["design_frequency_Hz"]), 1.0),
-        "E2": (field_data["E2_Ez"], float(data_dict["TM"][mode_j]["design_frequency_Hz"]), 1.0),
+        "E1": (field_data["E1_Ez"], data_dict["TM"][mode_i]["design_frequency_Hz"], 1.0),
+        "E2": (field_data["E2_Ez"], data_dict["TM"][mode_j]["design_frequency_Hz"], 1.0),
         "plus": (field_data["Ez_plus"], f_cross, lf_cross),
         "minus": (field_data["Ez_minus"], f_cross, lf_cross),
     }
+
     kicks = {}
     for name, (Ez, freq, lf) in kick_jobs.items():
         kicks[name] = hamm.kick_from_Ez_field(
@@ -96,6 +97,8 @@ def analyse_crossing(key: str, crossing: dict, data_dict: dict, save_root: Path,
             Req_m=Req_m,
             axis="y",
             fit_pixels=8,
+            save_directory=out_dir / "kick_diagnostics" / name,
+            label=name,
         )
 
     analysis = {
@@ -125,7 +128,6 @@ def main():
     # Edit these two paths for your machine.
     datapath = Path(r"D:\PhD\HOMmix\HOMmix_analytical\data")
     savepath = Path(r"D:\PhD\HOMmix\HOMmix_analytical\analysis\homotypic_dipoles")
-
 
     n_max, p_max = 3, 3
     voxel_res = 151

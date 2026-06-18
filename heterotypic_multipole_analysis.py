@@ -519,7 +519,7 @@ def analyse_all_heterotypic_crossings(
 if __name__ == "__main__":
     # Edit these paths for your machine.
     heterotypic_root = Path(r"D:\PhD\HOMmix\HOMmix_analytical\analysis\heterotypic_crossings")
-    datapath = Path(r"D:\PhD\HOMmix\HOMmix_analytical\data")
+    datapath = Path(r"D:\PhD\HOMmix\HOMmix_analytical")
     voxel_res = 151
 
     family_files = [
