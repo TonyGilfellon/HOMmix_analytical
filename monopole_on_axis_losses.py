@@ -570,6 +570,7 @@ def analyse_crossing(
         pickle_save(slice_dict, out_dir / "slice_dict.pkl")
         plot_all_plus(slice_dict, out_dir / "TM_plus")
         plot_all_minus(slice_dict, out_dir / "TM_minus")
+        plot_all_plus_minus_combined(slice_dict, out_dir / "TM_combined")
 
     return summary
 
@@ -607,26 +608,215 @@ def plot_all_minus(slice_dict: dict[str, np.ndarray], save_directory_fname: str 
     _plot_slice_group(slice_dict, save_directory_fname, op="minus")
 
 
+def plot_all_plus_minus_combined(slice_dict: dict[str, np.ndarray], save_directory_fname: str | Path) -> None:
+    _plot_slice_group_combined(slice_dict, save_directory_fname)
+
+
 def _plot_slice_group(slice_dict: dict[str, np.ndarray], save_directory_fname: str | Path, *, op: str) -> None:
     save_directory_fname = Path(save_directory_fname)
     save_directory_fname.mkdir(parents=True, exist_ok=True)
+
     slice_types = ["iris_1", "iris_2", "transverse_mid", "longitudinal_mid"]
-    rows = [("E1_Ex", "E2_Ex", f"Ex_{op}"), ("E1_Ey", "E2_Ey", f"Ey_{op}"), ("E1_Ez", "E2_Ez", f"Ez_{op}"), ("abs_E1", "abs_E2", f"abs_{op}")]
+    rows = [
+        ("E1_Ex", "E2_Ex", f"Ex_{op}"),
+        ("E1_Ey", "E2_Ey", f"Ey_{op}"),
+        ("E1_Ez", "E2_Ez", f"Ez_{op}"),
+        ("abs_E1", "abs_E2", f"abs_{op}"),
+    ]
 
     for stype in slice_types:
         fig, axes = plt.subplots(4, 3, figsize=(11, 10), constrained_layout=True)
         fig.suptitle(f"{op}: {stype}")
+
         for r, row_keys in enumerate(rows):
             row_data = [_real_image(slice_dict[f"{k}_{stype}"]) for k in row_keys]
-            vmax = max(float(np.nanmax(np.abs(x))) for x in row_data) or 1.0
+
+            is_abs_row = (r == 3)
+            if is_abs_row:
+                vmax = max(float(np.nanmax(x)) for x in row_data) or 1.0
+                if not np.isfinite(vmax) or vmax <= 0.0:
+                    vmax = 1.0
+                vmin = 0.0
+                cmap = "viridis"
+            else:
+                vmax = max(float(np.nanmax(np.abs(x))) for x in row_data) or 1.0
+                if not np.isfinite(vmax) or vmax <= 0.0:
+                    vmax = 1.0
+                vmin = -vmax
+                cmap = "RdBu_r"
+
             for c, (key, arr) in enumerate(zip(row_keys, row_data)):
                 ax = axes[r, c]
-                im = ax.imshow(arr.T if stype.startswith("iris") or stype == "transverse_mid" else arr, origin="lower", cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="auto")
+                plot_arr = arr.T if stype.startswith("iris") or stype == "transverse_mid" else arr
+                im = ax.imshow(
+                    plot_arr,
+                    origin="lower",
+                    cmap=cmap,
+                    vmin=vmin,
+                    vmax=vmax,
+                    aspect="auto",
+                )
                 ax.set_title(key)
-                ax.set_xticks([]); ax.set_yticks([])
-                ax.text(0.02, 0.98, f"max={np.nanmax(np.abs(arr)):.2e}", transform=ax.transAxes, ha="left", va="top", fontsize=8, bbox=dict(facecolor="white", alpha=0.65, edgecolor="none"))
+                ax.set_xticks([])
+                ax.set_yticks([])
+                ax.text(
+                    0.02,
+                    0.98,
+                    f"max={np.nanmax(np.abs(arr)):.2e}",
+                    transform=ax.transAxes,
+                    ha="left",
+                    va="top",
+                    fontsize=8,
+                    bbox=dict(facecolor="white", alpha=0.65, edgecolor="none"),
+                )
+
             fig.colorbar(im, ax=axes[r, :], fraction=0.02, pad=0.01)
+
         fig.savefig(save_directory_fname / f"{op}_{stype}.png", dpi=300)
+        plt.close(fig)
+
+def _plot_slice_group_combined(slice_dict: dict[str, np.ndarray], save_directory_fname: str | Path) -> None:
+    """Save 4x4 combined plots with columns [E1, E2, E+, E-].
+
+    Colour meaning:
+        - Ex, Ey, Ez rows are divided by max(abs(E1_Ez), abs(E2_Ez)).
+          Therefore colourbar value 1 means the parent Ez reference amplitude.
+        - |E| row is divided by max(|E1|, |E2|).
+          Therefore colourbar value 1 means the parent |E| reference amplitude.
+        - The colourbar limits are allowed to extend beyond +/-1 or 1 if E+
+          or E- exceed the parent reference.
+    """
+    save_directory_fname = Path(save_directory_fname)
+    save_directory_fname.mkdir(parents=True, exist_ok=True)
+
+    slice_types = ["iris_1", "iris_2", "transverse_mid", "longitudinal_mid"]
+    rows = [
+        ("E1_Ex", "E2_Ex", "Ex_plus", "Ex_minus"),
+        ("E1_Ey", "E2_Ey", "Ey_plus", "Ey_minus"),
+        ("E1_Ez", "E2_Ez", "Ez_plus", "Ez_minus"),
+        ("abs_E1", "abs_E2", "abs_plus", "abs_minus"),
+    ]
+
+    column_titles = ["E₁", "E₂", "E₊", "E₋"]
+    row_titles = [r"$E_x/E_{z,\mathrm{ref}}$", r"$E_y/E_{z,\mathrm{ref}}$", r"$E_z/E_{z,\mathrm{ref}}$", r"$|E|/|E|_{\mathrm{ref}}$"]
+
+    def _plot_orient(arr: np.ndarray, stype: str) -> np.ndarray:
+        return arr.T if stype.startswith("iris") or stype == "transverse_mid" else arr
+
+    def _safe_ref(arrays: list[np.ndarray]) -> float:
+        ref = max(float(np.nanmax(np.abs(a))) for a in arrays)
+        if not np.isfinite(ref) or ref <= 0.0:
+            ref = 1.0
+        return ref
+
+    def _safe_vmax(arrays: list[np.ndarray], ref: float, *, abs_only: bool) -> float:
+        scaled_max = max(float(np.nanmax(np.abs(a / ref))) for a in arrays)
+        if not np.isfinite(scaled_max) or scaled_max <= 0.0:
+            scaled_max = 1.0
+        return max(1.0, scaled_max)
+
+    for stype in slice_types:
+        fig, axes = plt.subplots(4, 4, figsize=(14, 10), constrained_layout=True)
+        fig.suptitle(f"plus/minus comparison: {stype}")
+
+        parent_ez_ref = _safe_ref([
+            _real_image(slice_dict[f"E1_Ez_{stype}"]),
+            _real_image(slice_dict[f"E2_Ez_{stype}"]),
+        ])
+
+        parent_abs_ref = _safe_ref([
+            _real_image(slice_dict[f"abs_E1_{stype}"]),
+            _real_image(slice_dict[f"abs_E2_{stype}"]),
+        ])
+
+        for r, row_keys in enumerate(rows):
+            raw_row_data = [_real_image(slice_dict[f"{k}_{stype}"]) for k in row_keys]
+
+            is_abs_row = r == 3
+            if is_abs_row:
+                ref = parent_abs_ref
+                row_data = [arr / ref for arr in raw_row_data]
+                vmin = 0.0
+                vmax = _safe_vmax(raw_row_data, ref, abs_only=True)
+                cmap = "viridis"
+            else:
+                ref = parent_ez_ref
+                row_data = [arr / ref for arr in raw_row_data]
+                vmax = _safe_vmax(raw_row_data, ref, abs_only=False)
+                vmin = -vmax
+                cmap = "RdBu_r"
+
+            for c, (key, arr_raw, arr_scaled) in enumerate(zip(row_keys, raw_row_data, row_data)):
+                ax = axes[r, c]
+                plot_arr = _plot_orient(arr_scaled, stype)
+
+                im = ax.imshow(
+                    plot_arr,
+                    origin="lower",
+                    cmap=cmap,
+                    vmin=vmin,
+                    vmax=vmax,
+                    aspect="auto",
+                )
+
+                if r == 0:
+                    ax.text(
+                        0.5,
+                        1.02,
+                        column_titles[c],
+                        transform=ax.transAxes,
+                        ha="center",
+                        va="bottom",
+                        fontsize=13,
+                        fontstyle="normal",
+                        fontweight="bold",
+                        zorder=100,
+                        bbox=dict(
+                            facecolor="white",
+                            edgecolor="none",
+                            alpha=0.90,
+                            pad=2.0,
+                        ),
+                        clip_on=False,
+                    )
+
+                if c == 0:
+                    ax.text(
+                        -0.12,
+                        0.5,
+                        row_titles[r],
+                        transform=ax.transAxes,
+                        rotation=90,
+                        ha="center",
+                        va="center",
+                        fontsize=12,
+                        zorder=100,
+                        bbox=dict(
+                            facecolor="white",
+                            edgecolor="none",
+                            alpha=0.90,
+                            pad=2.0,
+                        ),
+                        clip_on=False,
+                    )
+
+                ax.set_xticks([])
+                ax.set_yticks([])
+                ax.text(
+                    0.02,
+                    0.98,
+                    f"max={np.nanmax(np.abs(arr_raw)):.2e}\n"
+                    f"norm={np.nanmax(np.abs(arr_scaled)):.2g}",
+                    transform=ax.transAxes,
+                    ha="left",
+                    va="top",
+                    fontsize=8,
+                    bbox=dict(facecolor="white", alpha=0.65, edgecolor="none"),
+                )
+
+            fig.colorbar(im, ax=axes[r, :], fraction=0.02, pad=0.01)
+
+        fig.savefig(save_directory_fname / f"{stype}.png", dpi=300)
         plt.close(fig)
 
 
@@ -648,8 +838,8 @@ class RunConfig:
     LF_start: float = 0.7
     LF_stop: float = 1.3
     param_sweep_resolution: int = 1000
-    create_data: bool = True
-    create_fields: bool = True
+    create_data: bool = False
+    create_fields: bool = False
     make_plots: bool = True
 
     @property

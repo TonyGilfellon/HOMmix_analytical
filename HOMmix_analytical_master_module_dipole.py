@@ -263,11 +263,18 @@ def extract_slices(field_data: dict) -> dict:
 
 
 def plot_field_slices(field_data: dict, out_dir: str, title: str = ""):
-    """Save monopole-style 4x3 field-slice plots for plus and minus fields.
+    """Save field-slice plots for plus, minus and combined plus/minus views.
 
-    Produces eight files per crossing:
+    Produces the existing separate 4x3 plots:
       plus_iris_1.png, plus_iris_2.png, plus_transverse_mid.png,
       plus_longitudinal_mid.png, and the equivalent four minus_*.png files.
+
+    Also produces combined 4x4 plots:
+      iris_1.png, iris_2.png, transverse_mid.png, longitudinal_mid.png
+
+    Combined plot layout:
+      columns = [E1, E2, E+, E-]
+      rows    = [Ex, Ey, Ez, |E|]
 
     Array convention: field[x, y, z].
     Plot convention:
@@ -301,6 +308,46 @@ def plot_field_slices(field_data: dict, out_dir: str, title: str = ""):
         ],
     }
 
+    def _row_limits(row_data, is_abs_row: bool):
+        if is_abs_row:
+            vmax = max(float(np.nanmax(arr)) for arr in row_data)
+            vmin = 0.0
+            cmap = "viridis"
+        else:
+            vmax = max(float(np.nanmax(np.abs(arr))) for arr in row_data)
+            vmin = -vmax
+            cmap = "RdBu_r"
+
+        if not np.isfinite(vmax) or vmax == 0.0:
+            vmax = 1.0
+            if not is_abs_row:
+                vmin = -1.0
+
+        return vmin, vmax, cmap
+
+    def _label_axes(ax, stype):
+        if stype in ("iris_1", "iris_2", "transverse_mid"):
+            ax.set_xlabel("x pixel")
+            ax.set_ylabel("y pixel")
+        else:
+            ax.set_xlabel("z pixel")
+            ax.set_ylabel("y pixel")
+
+    def _annotate_max(ax, arr):
+        ax.text(
+            0.02,
+            0.98,
+            f"max={np.nanmax(np.abs(arr)):.2e}",
+            transform=ax.transAxes,
+            ha="left",
+            va="top",
+            fontsize=8,
+            bbox=dict(facecolor="white", alpha=0.65, edgecolor="none"),
+        )
+
+    # ------------------------------------------------------------------
+    # Existing separate plus/minus 4x3 figures.
+    # ------------------------------------------------------------------
     for op, rows in op_rows.items():
         for stype, slicer in slice_specs.items():
             fig, axes = plt.subplots(4, 3, figsize=(11, 10), constrained_layout=True)
@@ -308,20 +355,7 @@ def plot_field_slices(field_data: dict, out_dir: str, title: str = ""):
 
             for r, row_keys in enumerate(rows):
                 row_data = [slicer(field_data[k]) for k in row_keys]
-
-                if r == 3:  # |E| row
-                    vmax = max(float(np.nanmax(arr)) for arr in row_data)
-                    vmin = 0.0
-                    cmap = "viridis"
-                else:
-                    vmax = max(float(np.nanmax(np.abs(arr))) for arr in row_data)
-                    vmin = -vmax
-                    cmap = "RdBu_r"
-
-                if not np.isfinite(vmax) or vmax == 0.0:
-                    vmax = 1.0
-                    if r != 3:
-                        vmin = -1.0
+                vmin, vmax, cmap = _row_limits(row_data, is_abs_row=(r == 3))
 
                 for c, (key, arr) in enumerate(zip(row_keys, row_data)):
                     ax = axes[r, c]
@@ -334,29 +368,55 @@ def plot_field_slices(field_data: dict, out_dir: str, title: str = ""):
                         aspect="auto",
                     )
                     ax.set_title(key)
-
-                    if stype in ("iris_1", "iris_2", "transverse_mid"):
-                        ax.set_xlabel("x pixel")
-                        ax.set_ylabel("y pixel")
-                    else:
-                        ax.set_xlabel("z pixel")
-                        ax.set_ylabel("y pixel")
-
-                    ax.text(
-                        0.02,
-                        0.98,
-                        f"max={np.nanmax(np.abs(arr)):.2e}",
-                        transform=ax.transAxes,
-                        ha="left",
-                        va="top",
-                        fontsize=8,
-                        bbox=dict(facecolor="white", alpha=0.65, edgecolor="none"),
-                    )
+                    _label_axes(ax, stype)
+                    _annotate_max(ax, arr)
 
                 fig.colorbar(im, ax=axes[r, :], fraction=0.02, pad=0.01)
 
             fig.savefig(out_dir / f"{op}_{stype}.png", dpi=300)
             plt.close(fig)
+
+    # ------------------------------------------------------------------
+    # New combined 4x4 figures: columns = [E1, E2, E+, E-].
+    # ------------------------------------------------------------------
+    combined_rows = [
+        ("E1_Ex", "E2_Ex", "Ex_plus", "Ex_minus"),
+        ("E1_Ey", "E2_Ey", "Ey_plus", "Ey_minus"),
+        ("E1_Ez", "E2_Ez", "Ez_plus", "Ez_minus"),
+        ("abs_E1", "abs_E2", "abs_plus", "abs_minus"),
+    ]
+    column_titles = [r"$E_1$", r"$E_2$", r"$E_+$", r"$E_-$"]
+    row_titles = [r"$E_x$", r"$E_y$", r"$E_z$", r"$|E|$"]
+
+    for stype, slicer in slice_specs.items():
+        fig, axes = plt.subplots(4, 4, figsize=(14, 10), constrained_layout=True)
+        fig.suptitle(f"{title} : plus/minus comparison : {stype}")
+
+        for r, row_keys in enumerate(combined_rows):
+            row_data = [slicer(field_data[k]) for k in row_keys]
+            vmin, vmax, cmap = _row_limits(row_data, is_abs_row=(r == 3))
+
+            for c, (key, arr) in enumerate(zip(row_keys, row_data)):
+                ax = axes[r, c]
+                im = ax.imshow(
+                    arr,
+                    origin="lower",
+                    cmap=cmap,
+                    vmin=vmin,
+                    vmax=vmax,
+                    aspect="auto",
+                )
+                if r == 0:
+                    ax.set_title(column_titles[c])
+                if c == 0:
+                    ax.set_ylabel(row_titles[r])
+                _label_axes(ax, stype)
+                _annotate_max(ax, arr)
+
+            fig.colorbar(im, ax=axes[r, :], fraction=0.02, pad=0.01)
+
+        fig.savefig(out_dir / f"{stype}.png", dpi=300)
+        plt.close(fig)
 
 
 def accelerating_voltage_complex(Ez_line, z_m, omega, beta=1.0):

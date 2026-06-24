@@ -2082,6 +2082,123 @@ def plot_slice_field_grids_with_txt(
             else:
                 plt.show()
 
+
+    # ------------------------------------------------------------------
+    # New combined figures for each slice type:
+    # columns = [E1, E2, E+, E-], rows = [Ex, Ey, Ez, |E|].
+    # Saved as <save_directory_fname>_<slice_type>.png.
+    # ------------------------------------------------------------------
+    for stype in slice_types:
+        extent = extent_by_type.get(stype) if extent_by_type else None
+
+        key_map = {
+            ("Ex", "E1"): f"E1_Ex_{stype}",
+            ("Ex", "E2"): f"E2_Ex_{stype}",
+            ("Ex", "plus"): f"Ex_plus_{stype}",
+            ("Ex", "minus"): f"Ex_minus_{stype}",
+
+            ("Ey", "E1"): f"E1_Ey_{stype}",
+            ("Ey", "E2"): f"E2_Ey_{stype}",
+            ("Ey", "plus"): f"Ey_plus_{stype}",
+            ("Ey", "minus"): f"Ey_minus_{stype}",
+
+            ("Ez", "E1"): f"E1_Ez_{stype}",
+            ("Ez", "E2"): f"E2_Ez_{stype}",
+            ("Ez", "plus"): f"Ez_plus_{stype}",
+            ("Ez", "minus"): f"Ez_minus_{stype}",
+
+            ("absE", "E1"): f"abs_E1_{stype}",
+            ("absE", "E2"): f"abs_E2_{stype}",
+            ("absE", "plus"): f"abs_add_{stype}",
+            ("absE", "minus"): f"abs_sub_{stype}",
+        }
+
+        for r in rows:
+            for c in ("E1", "E2", "plus", "minus"):
+                _need(key_map[(r, c)])
+
+        vlims_xyz = {}
+        for r in ["Ex", "Ey", "Ez"]:
+            keys_for_row = [
+                key_map[(r, "E1")],
+                key_map[(r, "E2")],
+                key_map[(r, "plus")],
+                key_map[(r, "minus")],
+            ]
+            vlims_xyz[r] = _get_vlim_xyz_for_row(r, keys_for_row)
+
+        abs_keys = [
+            key_map[("absE", "E1")],
+            key_map[("absE", "E2")],
+            key_map[("absE", "plus")],
+            key_map[("absE", "minus")],
+        ]
+        vmin_abs, vmax_abs = _get_vlim_abs(stype, abs_keys)
+
+        fig, ax = plt.subplots(4, 4, figsize=(14, 10), sharex=True, sharey=True)
+        fig.suptitle(f"{stype} — plus/minus comparison", y=0.98)
+
+        col_labels = [r"$E_1$", r"$E_2$", r"$E_+$", r"$E_-$"]
+        for ci, clab in enumerate(col_labels):
+            ax[0, ci].set_title(clab)
+
+        for ri, rname in enumerate(rows):
+            ax[ri, 0].set_ylabel({"Ex": r"$E_x$", "Ey": r"$E_y$", "Ez": r"$E_z$", "absE": r"$|E|$"}[rname])
+
+            for ci, cname in enumerate(["E1", "E2", "plus", "minus"]):
+                a = ax[ri, ci]
+                raw = slice_dict[key_map[(rname, cname)]]
+
+                img = _to_real_image(
+                    raw,
+                    component=complex_component,
+                    abs_for_absE=abs_for_absE,
+                    rowname=rname,
+                )
+
+                mval = _max_magnitude(img)
+                subplot_id = f"combined_{stype}_{cname}_{rname}"
+                max_dict[subplot_id] = mval
+
+                a.text(
+                    0.02, 0.98, f"max|·|={mval:.3g}",
+                    transform=a.transAxes,
+                    ha="left", va="top",
+                    fontsize=9,
+                    bbox=dict(facecolor="white", alpha=0.65, edgecolor="none", pad=2.0),
+                )
+
+                if rname in {"Ex", "Ey", "Ez"}:
+                    vmin, vmax = vlims_xyz[rname]
+                    im = a.imshow(
+                        img, origin="lower", extent=extent,
+                        cmap=cmap_div, vmin=vmin, vmax=vmax, aspect="auto"
+                    )
+                else:
+                    im = a.imshow(
+                        img, origin="lower", extent=extent,
+                        cmap=cmap_abs, vmin=vmin_abs, vmax=vmax_abs, aspect="auto"
+                    )
+
+                if ci == 3:
+                    divider = make_axes_locatable(a)
+                    cax = divider.append_axes("right", size="4%", pad=0.05)
+                    cbar = fig.colorbar(im, cax=cax)
+                    cbar.ax.tick_params(labelsize=8)
+
+        if tight:
+            plt.tight_layout()
+
+        figs[(stype, "combined")] = fig
+        axes_out[(stype, "combined")] = ax
+
+        if save_fig:
+            plt.savefig(f"{save_directory_fname}_{stype}.png")
+            plt.close("all")
+        else:
+            plt.show()
+
+
     return figs, axes_out, max_dict
 
 

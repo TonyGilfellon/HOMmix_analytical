@@ -16,6 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 import numpy as np
 import HOMmix_analytical_master_module_quadrupole as hamm
+import matplotlib.pyplot as plt
 
 
 def assemble_all_quadrupole_data_dict(
@@ -99,6 +100,160 @@ def focusing_summary_line(name: str, result: dict) -> str:
     )
 
 
+
+def plot_field_slices_combined(field_data: dict, out_dir: str | Path, title: str = "") -> None:
+    """Save 4x4 combined plots with columns [E1, E2, E+, E-].
+
+    Saved files:
+        iris_1.png
+        iris_2.png
+        transverse_mid.png
+        longitudinal_mid.png
+
+    Rows:
+        Ex, Ey, Ez, |E|
+
+    Colour meaning:
+        - Ex, Ey and Ez rows are divided by max(abs(E1_Ez), abs(E2_Ez)).
+          Therefore colourbar value 1 means the parent Ez reference amplitude.
+        - |E| row is divided by max(|E1|, |E2|).
+          Therefore colourbar value 1 means the parent |E| reference amplitude.
+        - Colourbar limits extend beyond +/-1 or 1 if E+ or E- exceed the
+          parent reference.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    slice_specs = {
+        "iris_1": lambda F: np.asarray(F)[:, :, 0].T,
+        "iris_2": lambda F: np.asarray(F)[:, :, np.asarray(F).shape[2] - 1].T,
+        "transverse_mid": lambda F: np.asarray(F)[:, :, np.asarray(F).shape[2] // 2].T,
+        "longitudinal_mid": lambda F: np.asarray(F)[np.asarray(F).shape[0] // 2, :, :],
+    }
+
+    rows = [
+        ("E1_Ex", "E2_Ex", "Ex_plus", "Ex_minus"),
+        ("E1_Ey", "E2_Ey", "Ey_plus", "Ey_minus"),
+        ("E1_Ez", "E2_Ez", "Ez_plus", "Ez_minus"),
+        ("abs_E1", "abs_E2", "abs_plus", "abs_minus"),
+    ]
+
+    column_titles = ["E₁", "E₂", "E₊", "E₋"]
+    row_titles = [
+        "Eₓ / Ez ref",
+        "Eᵧ / Ez ref",
+        "Ez / Ez ref",
+        "|E| / |E| ref",
+    ]
+
+    def _real_image(a: np.ndarray) -> np.ndarray:
+        a = np.asarray(a)
+        return np.real(a) if np.iscomplexobj(a) else a
+
+    def _safe_ref(arrays: list[np.ndarray]) -> float:
+        ref = max(float(np.nanmax(np.abs(a))) for a in arrays)
+        if not np.isfinite(ref) or ref <= 0.0:
+            ref = 1.0
+        return ref
+
+    def _safe_vmax(arrays: list[np.ndarray], ref: float) -> float:
+        scaled_max = max(float(np.nanmax(np.abs(a / ref))) for a in arrays)
+        if not np.isfinite(scaled_max) or scaled_max <= 0.0:
+            scaled_max = 1.0
+        return max(1.0, scaled_max)
+
+    for stype, slicer in slice_specs.items():
+        fig, axes = plt.subplots(4, 4, figsize=(14, 10), constrained_layout=True)
+        fig.suptitle(f"{title} : plus/minus comparison : {stype}")
+
+        parent_ez_ref = _safe_ref([
+            slicer(_real_image(field_data["E1_Ez"])),
+            slicer(_real_image(field_data["E2_Ez"])),
+        ])
+
+        parent_abs_ref = _safe_ref([
+            slicer(_real_image(field_data["abs_E1"])),
+            slicer(_real_image(field_data["abs_E2"])),
+        ])
+
+        for r, row_keys in enumerate(rows):
+            raw_row_data = [slicer(_real_image(field_data[k])) for k in row_keys]
+
+            is_abs_row = r == 3
+            if is_abs_row:
+                ref = parent_abs_ref
+                row_data = [arr / ref for arr in raw_row_data]
+                vmin = 0.0
+                vmax = _safe_vmax(raw_row_data, ref)
+                cmap = "viridis"
+            else:
+                ref = parent_ez_ref
+                row_data = [arr / ref for arr in raw_row_data]
+                vmax = _safe_vmax(raw_row_data, ref)
+                vmin = -vmax
+                cmap = "RdBu_r"
+
+            for c, (key, arr_raw, arr_scaled) in enumerate(zip(row_keys, raw_row_data, row_data)):
+                ax = axes[r, c]
+                im = ax.imshow(
+                    arr_scaled,
+                    origin="lower",
+                    cmap=cmap,
+                    vmin=vmin,
+                    vmax=vmax,
+                    aspect="auto",
+                )
+
+                if r == 0:
+                    ax.text(
+                        0.5,
+                        1.02,
+                        column_titles[c],
+                        transform=ax.transAxes,
+                        ha="center",
+                        va="bottom",
+                        fontsize=13,
+                        fontstyle="normal",
+                        fontweight="bold",
+                        zorder=100,
+                        bbox=dict(facecolor="white", edgecolor="none", alpha=0.90, pad=2.0),
+                        clip_on=False,
+                    )
+
+                if c == 0:
+                    ax.text(
+                        -0.12,
+                        0.5,
+                        row_titles[r],
+                        transform=ax.transAxes,
+                        rotation=90,
+                        ha="center",
+                        va="center",
+                        fontsize=11,
+                        zorder=100,
+                        bbox=dict(facecolor="white", edgecolor="none", alpha=0.90, pad=2.0),
+                        clip_on=False,
+                    )
+
+                ax.set_xticks([])
+                ax.set_yticks([])
+                ax.text(
+                    0.02,
+                    0.98,
+                    f"max={np.nanmax(np.abs(arr_raw)):.2e}\n"
+                    f"norm={np.nanmax(np.abs(arr_scaled)):.2g}",
+                    transform=ax.transAxes,
+                    ha="left",
+                    va="top",
+                    fontsize=8,
+                    bbox=dict(facecolor="white", alpha=0.65, edgecolor="none"),
+                )
+
+            fig.colorbar(im, ax=axes[r, :], fraction=0.02, pad=0.01)
+
+        fig.savefig(out_dir / f"{stype}.png", dpi=300)
+        plt.close(fig)
+
 def analyse_crossing(
     key: str,
     crossing: dict,
@@ -138,6 +293,7 @@ def analyse_crossing(
     hamm.save_field_data_npz(field_data, str(out_dir / "field_data.npz"))
     hamm.pickle_save(hamm.extract_slices(field_data), out_dir / "slice_dict.pkl")
     hamm.plot_field_slices(field_data, str(out_dir / "plots"), title=f"TM{mode_i} / TM{mode_j}")
+    plot_field_slices_combined(field_data, out_dir / "combined_plots", title=f"TM{mode_i} / TM{mode_j}")
 
     f_cross = float(crossing["frequency_Hz"])
     lf_cross = float(crossing["length_factor"])
