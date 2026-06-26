@@ -1,19 +1,35 @@
 #!/usr/bin/env python3
 """
-generate_prab_mode_mixing_appendices_v7.py
+generate_prab_mode_mixing_appendices_v8.py
 
-PRAB appendix generator, test-image mode.
+PRAB appendix generator, Overleaf test-image mode.
 
-v7 fixes two issues:
-1. Entries are created directly from data rows/records, not plot folders.
-2. Table values are inferred from flexible column/key names, not only from a
-   narrow alias list.
+Purpose
+-------
+Creates one appendix entry per stored crossing data row/record.
 
-For the Overleaf test, every entry uses the same four image filenames:
+For this test, every entry uses the same four PNG filenames:
     iris_1.png
     iris_2.png
     longitudinal_mid.png
     transverse_mid.png
+
+So only four test PNGs need to be uploaded to Overleaf.
+
+Homotypic rows
+--------------
+- monopole--monopole: loss row only
+- dipole--dipole: kick row only
+- quadrupole--quadrupole: Kxx, Kyy, Kxy rows only
+
+Heterotypic rows
+----------------
+- loss, kick, Kxx, Kyy, Kxy rows
+
+v8 is deliberately flexible about column names. It tries:
+1. metric-specific keys, e.g. loss_1, k_parallel_E1, Kxx_plus
+2. generic homotypic keys, e.g. parent_1, parent_2, plus, minus, R_max
+3. Rmax computation from E1/E2/E+/E- if no stored R is found
 
 Edit ROOT_DIR and OUT_TEX inside main(), then run in PyCharm.
 """
@@ -85,14 +101,14 @@ HETEROTYPIC_PKL_REL = "heterotypic_crossings/all_heterotypic_multipole_analyses.
 
 KEY_ALIASES = {
     "mode_1": [
-        "mode_1", "mode1", "mode_i", "E1_mode", "parent_1", "parent1",
-        "mode_label_1", "mode_label_i", "label_1", "E1", "E_1",
-        "mnp_1", "mnp_i", "mode_i_label", "mode_a", "mode_A",
+        "mode_1", "mode1", "mode_i", "E1_mode", "parent_1_mode", "parent1_mode",
+        "mode_label_1", "mode_label_i", "label_1", "mnp_1", "mnp_i",
+        "mode_i_label", "mode_a", "E1_label", "E_1_label",
     ],
     "mode_2": [
-        "mode_2", "mode2", "mode_j", "E2_mode", "parent_2", "parent2",
-        "mode_label_2", "mode_label_j", "label_2", "E2", "E_2",
-        "mnp_2", "mnp_j", "mode_j_label", "mode_b", "mode_B",
+        "mode_2", "mode2", "mode_j", "E2_mode", "parent_2_mode", "parent2_mode",
+        "mode_label_2", "mode_label_j", "label_2", "mnp_2", "mnp_j",
+        "mode_j_label", "mode_b", "E2_label", "E_2_label",
     ],
     "ell": [
         "ell", "l", "length_factor", "L_factor", "l_factor",
@@ -140,21 +156,37 @@ METRIC_SPECS = {
 
 
 STATE_PATTERNS = {
+    "E1": ["e1", "e_1", "parent1", "parent_1", "mode1", "mode_1", "field1", "field_1", "1"],
+    "E2": ["e2", "e_2", "parent2", "parent_2", "mode2", "mode_2", "field2", "field_2", "2"],
+    "Eplus": ["eplus", "e_plus", "plus", "mixed_plus", "mix_plus", "sum"],
+    "Eminus": ["eminus", "e_minus", "minus", "mixed_minus", "mix_minus", "diff"],
+}
+
+
+GENERIC_STATE_COLUMNS = {
     "E1": [
-        "e1", "e_1", "parent1", "parent_1", "p1", "mode1", "mode_1",
-        "field1", "field_1", "1",
+        "metric_1", "value_1", "parent_1_value", "parent1_value",
+        "parent_1_metric", "parent1_metric", "q_1", "q1",
+        "e1_value", "e_1_value", "e1_metric", "e_1_metric",
+        "parent_1", "parent1",
     ],
     "E2": [
-        "e2", "e_2", "parent2", "parent_2", "p2", "mode2", "mode_2",
-        "field2", "field_2", "2",
+        "metric_2", "value_2", "parent_2_value", "parent2_value",
+        "parent_2_metric", "parent2_metric", "q_2", "q2",
+        "e2_value", "e_2_value", "e2_metric", "e_2_metric",
+        "parent_2", "parent2",
     ],
     "Eplus": [
-        "eplus", "e_plus", "plus", "e+", "mixed_plus", "mix_plus",
-        "sum", "positive",
+        "metric_plus", "value_plus", "plus_value", "plus_metric",
+        "mixed_plus", "mix_plus", "q_plus", "qplus",
+        "eplus_value", "e_plus_value", "eplus_metric", "e_plus_metric",
+        "plus", "eplus", "e_plus",
     ],
     "Eminus": [
-        "eminus", "e_minus", "minus", "e-", "mixed_minus", "mix_minus",
-        "diff", "negative",
+        "metric_minus", "value_minus", "minus_value", "minus_metric",
+        "mixed_minus", "mix_minus", "q_minus", "qminus",
+        "eminus_value", "e_minus_value", "eminus_metric", "e_minus_metric",
+        "minus", "eminus", "e_minus",
     ],
 }
 
@@ -229,7 +261,7 @@ def read_csv_dicts(path: Path) -> list[dict[str, Any]]:
         rows = [flatten(dict(row)) for row in csv.DictReader(f)]
 
     if rows:
-        print("  sample columns:", list(rows[0].keys())[:25])
+        print("  sample columns:", list(rows[0].keys())[:40])
     return rows
 
 
@@ -239,49 +271,6 @@ def load_pickle(path: Path) -> Any:
         return None
     with path.open("rb") as f:
         return pickle.load(f)
-
-
-def extract_records(obj: Any) -> list[dict[str, Any]]:
-    records: list[dict[str, Any]] = []
-
-    def visit(x: Any) -> None:
-        if isinstance(x, dict):
-            flat = flatten(x)
-            keys = {normal_key(k) for k in flat}
-
-            has_mode = any(normal_key(a) in keys for a in KEY_ALIASES["mode_1"]) and \
-                       any(normal_key(a) in keys for a in KEY_ALIASES["mode_2"])
-
-            has_metric = any(
-                any(normal_key(p) in key or key in normal_key(p) for p in spec["patterns"])
-                for key in keys
-                for spec in METRIC_SPECS.values()
-            )
-
-            if has_mode or has_metric:
-                records.append(flat)
-
-            for v in x.values():
-                if isinstance(v, (dict, list, tuple)):
-                    visit(v)
-
-        elif isinstance(x, (list, tuple)):
-            for item in x:
-                visit(item)
-
-    visit(obj)
-
-    unique: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for rec in records:
-        ident = "|".join(str(get_value(rec, k)) for k in ("mode_1", "mode_2", "ell", "f_hat"))
-        # Include number of keys so nested partial records are not all collapsed.
-        ident += f"|{len(rec)}"
-        if ident not in seen:
-            seen.add(ident)
-            unique.append(rec)
-
-    return unique
 
 
 def to_float(value: Any) -> float | None:
@@ -368,38 +357,6 @@ def latex_escape(text: Any) -> str:
     return "".join(repl.get(ch, ch) for ch in s)
 
 
-def key_contains_any(key: str, patterns: list[str]) -> bool:
-    nk = normal_key(key)
-    return any(normal_key(p) in nk for p in patterns)
-
-
-def state_score(key: str, state: str) -> int:
-    nk = normal_key(key)
-    score = 0
-    for pat in STATE_PATTERNS[state]:
-        npat = normal_key(pat)
-        if not npat:
-            continue
-        if nk == npat:
-            score += 20
-        elif nk.endswith("_" + npat) or nk.startswith(npat + "_"):
-            score += 12
-        elif npat in nk:
-            score += 5
-
-    # Extra penalties to stop E1 matching E10, or "1" matching everything.
-    if state == "E1" and re.search(r"(^|_)e?1($|_)", nk):
-        score += 10
-    if state == "E2" and re.search(r"(^|_)e?2($|_)", nk):
-        score += 10
-    if state == "Eplus" and ("plus" in nk or "e_plus" in nk):
-        score += 10
-    if state == "Eminus" and ("minus" in nk or "e_minus" in nk):
-        score += 10
-
-    return score
-
-
 def metric_score(key: str, metric: str) -> int:
     nk = normal_key(key)
     score = 0
@@ -412,63 +369,92 @@ def metric_score(key: str, metric: str) -> int:
     return score
 
 
-def find_metric_value(values: dict[str, Any], metric: str, state: str) -> Any:
-    """
-    Find scalar value for metric/state from flexible column names.
+def state_score(key: str, state: str) -> int:
+    nk = normal_key(key)
+    score = 0
+    for pat in STATE_PATTERNS[state]:
+        npat = normal_key(pat)
+        if nk == npat:
+            score += 20
+        elif nk.endswith("_" + npat) or nk.startswith(npat + "_"):
+            score += 12
+        elif npat in nk:
+            score += 5
 
-    Examples matched:
-      loss_1, E1_loss, k_parallel_E1, parent1_loss
-      kick_plus, E_plus_k_perp
-      Kxx_minus, Eminus_Kxx
-    """
+    if state == "E1" and re.search(r"(^|_)e?1($|_)", nk):
+        score += 10
+    if state == "E2" and re.search(r"(^|_)e?2($|_)", nk):
+        score += 10
+    if state == "Eplus" and ("plus" in nk or "e_plus" in nk):
+        score += 10
+    if state == "Eminus" and ("minus" in nk or "e_minus" in nk):
+        score += 10
+
+    return score
+
+
+def find_metric_value(values: dict[str, Any], metric: str, state: str) -> Any:
     best_key = None
     best_score = -1
 
     for key, value in values.items():
-        if is_missing_or_array_like(value):
+        if is_missing_or_array_like(value) or to_float(value) is None:
             continue
 
         mscore = metric_score(key, metric)
-        if mscore <= 0:
-            continue
-
         sscore = state_score(key, state)
-        if sscore <= 0:
+
+        if mscore <= 0 or sscore <= 0:
             continue
 
         total = mscore + sscore
-
-        # Prefer exact-looking scalar columns over long nested keys.
         if "." not in str(key):
             total += 2
+
+        # Avoid mode label numeric-ish false positives.
+        nk = normal_key(key)
+        if any(tok in nk for tok in ["mode", "label", "mnp"]):
+            total -= 50
 
         if total > best_score:
             best_score = total
             best_key = key
 
-    if best_key is None:
-        return None
-
-    return values[best_key]
+    return values[best_key] if best_key is not None else None
 
 
-def find_ratio_value(values: dict[str, Any], metric: str) -> Any:
+def find_generic_state_value(values: dict[str, Any], state: str) -> Any:
+    aliases = GENERIC_STATE_COLUMNS[state]
+
+    # Exact alias match.
+    for alias in aliases:
+        na = normal_key(alias)
+        for key, value in values.items():
+            if is_missing_or_array_like(value) or to_float(value) is None:
+                continue
+            if normal_key(key) == na:
+                return value
+
+    # Soft alias match.
     best_key = None
     best_score = -1
-
     for key, value in values.items():
-        if is_missing_or_array_like(value):
+        if is_missing_or_array_like(value) or to_float(value) is None:
             continue
 
         nk = normal_key(key)
         score = 0
-        for pat in METRIC_SPECS[metric]["r_patterns"]:
-            if normal_key(pat) in nk:
+        for alias in aliases:
+            na = normal_key(alias)
+            if nk == na:
                 score += 30
+            elif nk.endswith("_" + na) or nk.startswith(na + "_"):
+                score += 15
+            elif na in nk:
+                score += 6
 
-        # Fallback: metric plus rmax/enhancement/ratio in name.
-        if metric_score(key, metric) > 0 and any(w in nk for w in ["rmax", "ratio", "enhancement"]):
-            score += 20
+        if any(tok in nk for tok in ["rmax", "ratio", "enhancement", "mode", "label", "mnp"]):
+            score -= 25
 
         if score > best_score:
             best_score = score
@@ -477,37 +463,175 @@ def find_ratio_value(values: dict[str, Any], metric: str) -> Any:
     return values[best_key] if best_key is not None and best_score > 0 else None
 
 
-def metric_rmax(values: dict[str, Any], metric: str) -> str:
-    stored = find_ratio_value(values, metric)
-    if stored is not None:
-        return fmt_ratio(stored)
+def find_ratio_value(values: dict[str, Any], metric: str | None = None) -> Any:
+    aliases = ["R_max", "Rmax", "ratio_max", "max_ratio", "enhancement", "max_enhancement", "mixed_max", "R"]
 
-    e1 = to_float(find_metric_value(values, metric, "E1"))
-    e2 = to_float(find_metric_value(values, metric, "E2"))
-    ep = to_float(find_metric_value(values, metric, "Eplus"))
-    em = to_float(find_metric_value(values, metric, "Eminus"))
+    if metric is not None:
+        aliases = METRIC_SPECS[metric]["r_patterns"] + aliases
 
-    parents = [abs(x) for x in (e1, e2) if x is not None]
-    mixed = [abs(x) for x in (ep, em) if x is not None]
+    for alias in aliases:
+        na = normal_key(alias)
+        for key, value in values.items():
+            if is_missing_or_array_like(value) or to_float(value) is None:
+                continue
+            if normal_key(key) == na:
+                return value
 
-    if not parents or not mixed or max(parents) == 0:
-        return "--"
+    best_key = None
+    best_score = -1
+    for key, value in values.items():
+        if is_missing_or_array_like(value) or to_float(value) is None:
+            continue
 
-    return fmt_ratio(max(mixed) / max(parents))
+        nk = normal_key(key)
+        score = 0
+        if metric is not None and metric_score(key, metric) > 0:
+            score += 10
+        if "rmax" in nk or "r_max" in nk:
+            score += 30
+        if "ratio" in nk:
+            score += 20
+        if "enhancement" in nk:
+            score += 20
+        if "mixed_max" in nk:
+            score += 15
+
+        if score > best_score:
+            best_score = score
+            best_key = key
+
+    return values[best_key] if best_key is not None and best_score > 0 else None
 
 
-def metric_row(values: dict[str, Any], metric: str) -> str:
+def metric_values_for_entry(entry: CrossingEntry, metric: str) -> tuple[Any, Any, Any, Any, Any]:
+    v = entry.values
+
+    e1 = find_metric_value(v, metric, "E1")
+    e2 = find_metric_value(v, metric, "E2")
+    ep = find_metric_value(v, metric, "Eplus")
+    em = find_metric_value(v, metric, "Eminus")
+    r = find_ratio_value(v, metric)
+
+    # Homotypic CSV fallback: the CSV file/class already defines the metric.
+    if entry.family == "homotypic" and metric in APPENDIX_CLASSES[entry.class_key]["rows"]:
+        if e1 is None:
+            e1 = find_generic_state_value(v, "E1")
+        if e2 is None:
+            e2 = find_generic_state_value(v, "E2")
+        if ep is None:
+            ep = find_generic_state_value(v, "Eplus")
+        if em is None:
+            em = find_generic_state_value(v, "Eminus")
+        if r is None:
+            r = find_ratio_value(v, None)
+
+    if r is None:
+        parents = [abs(x) for x in (to_float(e1), to_float(e2)) if x is not None]
+        mixed = [abs(x) for x in (to_float(ep), to_float(em)) if x is not None]
+        if parents and mixed and max(parents) != 0:
+            r = max(mixed) / max(parents)
+
+    return e1, e2, ep, em, r
+
+
+def record_has_any_metric(rec: dict[str, Any]) -> bool:
+    dummy = CrossingEntry(family="heterotypic", class_key="mono_dipole", values=rec)
+    for metric in ["loss", "kick", "Kxx", "Kyy", "Kxy"]:
+        vals = metric_values_for_entry(dummy, metric)
+        if any(v is not None for v in vals[:4]):
+            return True
+    return False
+
+
+def set_default_mode_labels(record: dict[str, Any]) -> dict[str, Any]:
+    m1 = compact_mode_label(get_value(record, "mode_1"))
+    m2 = compact_mode_label(get_value(record, "mode_2"))
+    if m1:
+        record["mode_1"] = m1
+    if m2:
+        record["mode_2"] = m2
+    return record
+
+
+def merge_records_by_identity(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, dict[str, Any]] = {}
+
+    for rec in records:
+        rec = set_default_mode_labels(rec)
+
+        m1 = compact_mode_label(get_value(rec, "mode_1"))
+        m2 = compact_mode_label(get_value(rec, "mode_2"))
+        ell = to_float(get_value(rec, "ell"))
+        f_hat = to_float(get_value(rec, "f_hat"))
+
+        key = "|".join([
+            m1 or "?",
+            m2 or "?",
+            f"{ell:.8g}" if ell is not None else "?",
+            f"{f_hat:.8g}" if f_hat is not None else "?",
+        ])
+
+        if key not in merged:
+            merged[key] = {}
+
+        for k, v in rec.items():
+            if is_missing_or_array_like(v):
+                continue
+            if k not in merged[key] or is_missing_or_array_like(merged[key][k]):
+                merged[key][k] = v
+
+    return list(merged.values())
+
+
+def extract_records(obj: Any) -> list[dict[str, Any]]:
+    raw_records: list[dict[str, Any]] = []
+
+    def visit(x: Any) -> None:
+        if isinstance(x, dict):
+            flat = flatten(x)
+            keys = {normal_key(k) for k in flat}
+
+            has_mode = any(normal_key(a) in keys for a in KEY_ALIASES["mode_1"]) and \
+                       any(normal_key(a) in keys for a in KEY_ALIASES["mode_2"])
+
+            has_metric_name = any(
+                any(normal_key(p) in key or key in normal_key(p) for p in spec["patterns"])
+                for key in keys
+                for spec in METRIC_SPECS.values()
+            )
+
+            if has_mode or has_metric_name:
+                raw_records.append(flat)
+
+            for v in x.values():
+                if isinstance(v, (dict, list, tuple)):
+                    visit(v)
+
+        elif isinstance(x, (list, tuple)):
+            for item in x:
+                visit(item)
+
+    visit(obj)
+
+    records = merge_records_by_identity(raw_records)
+    with_modes = [
+        set_default_mode_labels(r)
+        for r in records
+        if get_value(r, "mode_1") is not None and get_value(r, "mode_2") is not None
+    ]
+
+    metric_records = [r for r in with_modes if record_has_any_metric(r)]
+    return metric_records if metric_records else with_modes
+
+
+def metric_row_for_entry(entry: CrossingEntry, metric: str) -> str:
     spec = METRIC_SPECS[metric]
-
-    e1 = fmt_num(find_metric_value(values, metric, "E1"))
-    e2 = fmt_num(find_metric_value(values, metric, "E2"))
-    ep = fmt_num(find_metric_value(values, metric, "Eplus"))
-    em = fmt_num(find_metric_value(values, metric, "Eminus"))
-    rmax = metric_rmax(values, metric)
+    e1_raw, e2_raw, ep_raw, em_raw, r_raw = metric_values_for_entry(entry, metric)
 
     return (
         f"{spec['label']} & {spec['units']} & "
-        f"${e1}$ & ${e2}$ & ${ep}$ & ${em}$ & {rmax} \\\\"
+        f"${fmt_num(e1_raw)}$ & ${fmt_num(e2_raw)}$ & "
+        f"${fmt_num(ep_raw)}$ & ${fmt_num(em_raw)}$ & {fmt_ratio(r_raw)} \\\\"
     )
 
 
@@ -542,16 +666,6 @@ def heterotypic_class_key(record: dict[str, Any]) -> str | None:
     return None
 
 
-def set_default_mode_labels(record: dict[str, Any]) -> dict[str, Any]:
-    m1 = compact_mode_label(get_value(record, "mode_1"))
-    m2 = compact_mode_label(get_value(record, "mode_2"))
-    if m1:
-        record["mode_1"] = m1
-    if m2:
-        record["mode_2"] = m2
-    return record
-
-
 def entry_sort_key(entry: CrossingEntry) -> tuple[str, float, str]:
     mode_1 = compact_mode_label(get_value(entry.values, "mode_1")) or ""
     mode_2 = compact_mode_label(get_value(entry.values, "mode_2")) or ""
@@ -559,26 +673,34 @@ def entry_sort_key(entry: CrossingEntry) -> tuple[str, float, str]:
     return mode_1, ell if ell is not None else -1.0, mode_2
 
 
-def print_metric_diagnostics(label: str, rows: list[dict[str, Any]]) -> None:
+def print_metric_diagnostics(label: str, rows: list[dict[str, Any]], class_key: str | None = None) -> None:
     if not rows:
         return
-    row = rows[0]
+
+    row = set_default_mode_labels(dict(rows[0]))
     print(f"  diagnostics for {label}, first row:")
-    for metric in ["loss", "kick", "Kxx", "Kyy", "Kxy"]:
-        vals = [
-            find_metric_value(row, metric, s)
-            for s in ["E1", "E2", "Eplus", "Eminus"]
-        ]
-        if any(v is not None for v in vals):
-            print(f"    {metric}: found at least one value -> {vals}")
+    print("    mode_1:", get_value(row, "mode_1"), "mode_2:", get_value(row, "mode_2"))
+    print("    first 40 keys:", list(row.keys())[:40])
+
+    if class_key is None:
+        dummy = CrossingEntry(family="heterotypic", class_key="mono_dipole", values=row)
+        metrics = ["loss", "kick", "Kxx", "Kyy", "Kxy"]
+    else:
+        dummy = CrossingEntry(
+            family=APPENDIX_CLASSES[class_key]["family"],
+            class_key=class_key,
+            values=row,
+        )
+        metrics = APPENDIX_CLASSES[class_key]["rows"]
+
+    for metric in metrics:
+        print(f"    {metric}:", metric_values_for_entry(dummy, metric))
 
 
 def collect_entries(root: Path) -> dict[str, list[CrossingEntry]]:
-    grouped: dict[str, list[CrossingEntry]] = {
-        key: [] for key in APPENDIX_CLASSES
-    }
+    grouped: dict[str, list[CrossingEntry]] = {key: [] for key in APPENDIX_CLASSES}
 
-    # Homotypic: entries come directly from CSV rows.
+    # Homotypic CSV rows.
     for class_key, meta in APPENDIX_CLASSES.items():
         if meta["family"] != "homotypic":
             continue
@@ -586,24 +708,20 @@ def collect_entries(root: Path) -> dict[str, list[CrossingEntry]]:
         csv_path = root / meta["csv_rel"]
         rows = read_csv_dicts(csv_path)
         print(f"Loaded {len(rows)} rows: {csv_path}")
-        print_metric_diagnostics(class_key, rows)
+        print_metric_diagnostics(class_key, rows, class_key=class_key)
 
         for row in rows:
             row = set_default_mode_labels(row)
             grouped[class_key].append(
-                CrossingEntry(
-                    family="homotypic",
-                    class_key=class_key,
-                    values=row,
-                )
+                CrossingEntry(family="homotypic", class_key=class_key, values=row)
             )
 
-    # Heterotypic: entries come directly from PKL records.
+    # Heterotypic PKL records.
     pkl_path = root / HETEROTYPIC_PKL_REL
     obj = load_pickle(pkl_path)
     hetero_records = extract_records(obj) if obj is not None else []
     print(f"Loaded {len(hetero_records)} heterotypic records: {pkl_path}")
-    print_metric_diagnostics("heterotypic", hetero_records)
+    print_metric_diagnostics("heterotypic", hetero_records, class_key=None)
 
     unclassified = 0
     for rec in hetero_records:
@@ -612,12 +730,9 @@ def collect_entries(root: Path) -> dict[str, list[CrossingEntry]]:
         if class_key is None:
             unclassified += 1
             continue
+
         grouped[class_key].append(
-            CrossingEntry(
-                family="heterotypic",
-                class_key=class_key,
-                values=rec,
-            )
+            CrossingEntry(family="heterotypic", class_key=class_key, values=rec)
         )
 
     if unclassified:
@@ -651,7 +766,7 @@ def title_line(entry: CrossingEntry) -> str:
 
 def metric_table(entry: CrossingEntry) -> str:
     rows_to_show = APPENDIX_CLASSES[entry.class_key]["rows"]
-    rows = "\n".join(metric_row(entry.values, metric) for metric in rows_to_show)
+    rows = "\n".join(metric_row_for_entry(entry, metric) for metric in rows_to_show)
 
     return rf"""
 \begin{{center}}
@@ -683,14 +798,12 @@ def plots_block() -> str:
 
 
 def crossing_block(entry: CrossingEntry) -> str:
-    return "\n".join(
-        [
-            metric_table(entry),
-            r"\vspace{-1.0em}",
-            plots_block(),
-            r"\vspace{-0.5em}",
-        ]
-    )
+    return "\n".join([
+        metric_table(entry),
+        r"\vspace{-1.0em}",
+        plots_block(),
+        r"\vspace{-0.5em}",
+    ])
 
 
 def latex_appendices(grouped: dict[str, list[CrossingEntry]]) -> str:
@@ -737,10 +850,7 @@ def latex_appendices(grouped: dict[str, list[CrossingEntry]]) -> str:
     return "\n".join(parts).strip() + "\n"
 
 
-def main(
-    root: Path | str | None = None,
-    out: Path | str | None = None,
-) -> None:
+def main(root: Path | str | None = None, out: Path | str | None = None) -> None:
     """
     ROOT_DIR is the root of the stored analysis data, not this script location.
     """

@@ -303,20 +303,10 @@ def save_field_data_npz(field_data: dict, filename: str):
 
 
 def extract_slices(field_data: dict) -> dict:
-    """Extract the four 2D slices used by the compact summary PDFs.
-
-    Generated keys include, for every 3D field F in field_data:
-        *_iris_1             F[:, :, 0]
-        *_iris_2             F[:, :, -1]
-        *_transverse_mid     F[:, :, mid_z]
-        *_longitudinal_mid   F[mid_x, :, :]
-    """
     slices = {}
     for k, F in field_data.items():
         if isinstance(F, np.ndarray) and F.ndim == 3:
-            midx, midz = F.shape[0] // 2, F.shape[2] // 2
-            slices[f"{k}_iris_1"] = F[:, :, 0]
-            slices[f"{k}_iris_2"] = F[:, :, -1]
+            midx, midz = F.shape[0]//2, F.shape[2]//2
             slices[f"{k}_transverse_mid"] = F[:, :, midz]
             slices[f"{k}_longitudinal_mid"] = F[midx, :, :]
     return slices
@@ -612,183 +602,6 @@ def plot_combined_field_slices_4x4(
 
         fig.savefig(out_dir / f"{stype}.png", dpi=300)
         plt.close(fig)
-
-
-def _save_one_2x4_slice_on_gridspec(
-    fig: plt.Figure,
-    grid_slot,
-    slice_dict: dict[str, np.ndarray],
-    stype: str,
-    block_title: str,
-) -> None:
-    """Draw one 2x4 [Ez, |E|] x [E1, E2, E-, E+] slice block."""
-    rows = [
-        ("E1_Ez", "E2_Ez", "Ez_minus", "Ez_plus"),
-        ("abs_E1", "abs_E2", "abs_minus", "abs_plus"),
-    ]
-    column_titles = [r"$E_1$", r"$E_2$", r"$E_-$", r"$E_+$"]
-    row_titles = [
-        r"$E_z/E_{z,\mathrm{ref}}$",
-        r"$|E|/|E|_{\mathrm{ref}}$",
-    ]
-
-    def _real_image(arr):
-        return np.real(np.asarray(arr))
-
-    def _plot_orient(arr, slice_type):
-        return arr.T if slice_type.startswith("iris") or slice_type == "transverse_mid" else arr
-
-    def _safe_ref(arrays):
-        ref = max(float(np.nanmax(np.abs(a))) for a in arrays)
-        return ref if np.isfinite(ref) and ref > 0.0 else 1.0
-
-    def _safe_vmax(arrays, ref):
-        scaled_max = max(float(np.nanmax(np.abs(a / ref))) for a in arrays)
-        return max(1.0, scaled_max) if np.isfinite(scaled_max) and scaled_max > 0.0 else 1.0
-
-    gs = grid_slot.subgridspec(
-        2,
-        5,
-        width_ratios=[1, 1, 1, 1, 0.045],
-        height_ratios=[1, 1],
-        wspace=0.0,
-        hspace=0.04,
-    )
-
-    parent_ez_ref = _safe_ref([
-        _real_image(slice_dict[f"E1_Ez_{stype}"]),
-        _real_image(slice_dict[f"E2_Ez_{stype}"]),
-    ])
-    parent_abs_ref = _safe_ref([
-        _real_image(slice_dict[f"abs_E1_{stype}"]),
-        _real_image(slice_dict[f"abs_E2_{stype}"]),
-    ])
-
-    first_ax = None
-
-    for r, row_keys in enumerate(rows):
-        raw_row_data = [_real_image(slice_dict[f"{k}_{stype}"]) for k in row_keys]
-
-        if r == 0:
-            ref = parent_ez_ref
-            row_data = [arr / ref for arr in raw_row_data]
-            vmax = _safe_vmax(raw_row_data, ref)
-            vmin = -vmax
-            cmap = "RdBu_r"
-        else:
-            ref = parent_abs_ref
-            row_data = [arr / ref for arr in raw_row_data]
-            vmin = 0.0
-            vmax = _safe_vmax(raw_row_data, ref)
-            cmap = "viridis"
-
-        im = None
-
-        for c, (arr_raw, arr_scaled) in enumerate(zip(raw_row_data, row_data)):
-            ax = fig.add_subplot(gs[r, c])
-            if first_ax is None:
-                first_ax = ax
-
-            ax.set_anchor("C")
-            plot_arr = _plot_orient(arr_scaled, stype)
-
-            im = ax.imshow(
-                plot_arr,
-                origin="lower",
-                cmap=cmap,
-                vmin=vmin,
-                vmax=vmax,
-                aspect="equal",
-            )
-            ny, nx = plot_arr.shape
-            ax.set_box_aspect(ny / nx)
-            ax.margins(0)
-            ax.set_xticks([])
-            ax.set_yticks([])
-
-            if r == 0:
-                ax.set_title(column_titles[c], fontsize=10, fontweight="bold", pad=2)
-            if c == 0:
-                ax.set_ylabel(row_titles[r], fontsize=9, rotation=90, labelpad=7)
-
-            ax.text(
-                0.04,
-                0.96,
-                f"{np.nanmax(np.abs(arr_scaled)):.2f}",
-                transform=ax.transAxes,
-                ha="left",
-                va="top",
-                fontsize=8,
-                bbox=dict(facecolor="white", edgecolor="none", alpha=0.75, pad=1.2),
-            )
-
-        cax = fig.add_subplot(gs[r, 4])
-        cb = fig.colorbar(im, cax=cax)
-        cb.ax.tick_params(labelsize=7, length=2, pad=1)
-
-    if first_ax is not None:
-        first_ax.text(
-            0.0,
-            1.04,
-            block_title,
-            transform=first_ax.transAxes,
-            ha="left",
-            va="bottom",
-            fontsize=11,
-            fontweight="bold",
-            clip_on=False,
-            bbox=dict(facecolor="white", edgecolor="none", alpha=0.90, pad=0.2),
-        )
-
-
-def save_four_slice_pdfs_and_merge(
-    slice_dict: dict[str, np.ndarray],
-    out_dir: str | Path,
-    merged_pdf_name: str = "combined_four_slice_summary.pdf",
-) -> Path:
-    """Save one tall single-page PDF containing all four 2x4 slice summaries.
-
-    The name is retained for compatibility with the homotypic scripts, but this
-    implementation no longer creates four separate pages and then merges them.
-    It writes a single tall PDF directly, suitable for one \includegraphics call
-    in the PRAB appendix.
-    """
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    specs = [
-        ("iris_1", "Transverse iris 1"),
-        ("iris_2", "Transverse iris 2"),
-        ("longitudinal_mid", "Longitudinal vertical mid-plane"),
-        ("transverse_mid", "Transverse mid-plane"),
-    ]
-
-    fig = plt.figure(figsize=(7.2, 12.0), constrained_layout=False)
-    outer = fig.add_gridspec(
-        4,
-        1,
-        left=0.075,
-        right=0.965,
-        bottom=0.025,
-        top=0.975,
-        hspace=0.20,
-    )
-
-    for block_idx, (stype, block_title) in enumerate(specs):
-        _save_one_2x4_slice_on_gridspec(
-            fig=fig,
-            grid_slot=outer[block_idx, 0],
-            slice_dict=slice_dict,
-            stype=stype,
-            block_title=block_title,
-        )
-
-    out_file = out_dir / merged_pdf_name
-    fig.savefig(out_file, format="pdf", bbox_inches="tight", pad_inches=0.02)
-    plt.close(fig)
-
-    print(f"Wrote single-page summary PDF {out_file}")
-    return out_file
 
 def accelerating_voltage_complex(Ez_line, z_m, omega, beta=1.0):
     zc = np.asarray(z_m, float) - 0.5*(z_m[0] + z_m[-1])
@@ -1313,21 +1126,7 @@ def get_or_create_heterotypic_field_data(
     analysis_file = out_dir / "heterotypic_crossing_analysis.pkl"
 
     if (not create_fields) and field_file.exists() and analysis_file.exists():
-        analysis = pickle_load(analysis_file)
-        summary_pdf = out_dir / "slice_summary_pdfs" / f"{out_dir.name}_field_summary.pdf"
-        if not summary_pdf.exists():
-            field_data = load_npz_dict(field_file)
-            slice_dict = extract_slices(field_data)
-            pickle_save(slice_dict, out_dir / "slice_dict.pkl")
-            summary_pdf = save_four_slice_pdfs_and_merge(
-                slice_dict=slice_dict,
-                out_dir=out_dir / "slice_summary_pdfs",
-                merged_pdf_name=f"{out_dir.name}_field_summary.pdf",
-            )
-        analysis.setdefault("files", {})["slice_summary_dir"] = str(out_dir / "slice_summary_pdfs")
-        analysis.setdefault("files", {})["merged_slice_pdf"] = str(summary_pdf)
-        pickle_save(analysis, analysis_file)
-        return analysis
+        return pickle_load(analysis_file)
 
     m_i, mnp_i = parse_mode_name(crossing["mode_i"])
     m_j, mnp_j = parse_mode_name(crossing["mode_j"])
@@ -1340,15 +1139,7 @@ def get_or_create_heterotypic_field_data(
 
     field_data = combine_fields(E1, E2)
     save_npz_dict(field_file, field_data)
-
-    slice_dict = extract_slices(field_data)
-    pickle_save(slice_dict, out_dir / "slice_dict.pkl")
-
-    summary_pdf = save_four_slice_pdfs_and_merge(
-        slice_dict=slice_dict,
-        out_dir=out_dir / "slice_summary_pdfs",
-        merged_pdf_name=f"{out_dir.name}_field_summary.pdf",
-    )
+    pickle_save(extract_slices(field_data), out_dir / "slice_dict.pkl")
 
     plots_dir = out_dir / "plots"
     plot_field_slices(
@@ -1377,8 +1168,6 @@ def get_or_create_heterotypic_field_data(
             "field_data_npz": str(field_file),
             "slice_dict_pkl": str(out_dir / "slice_dict.pkl"),
             "plots_dir": str(out_dir / "plots"),
-            "slice_summary_dir": str(out_dir / "slice_summary_pdfs"),
-            "merged_slice_pdf": str(summary_pdf),
         },
         "note": (
             "Heterotypic field mixing only.  No scalar loss/kick/focusing figure "

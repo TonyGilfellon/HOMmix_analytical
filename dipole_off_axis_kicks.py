@@ -211,38 +211,436 @@ def plot_field_slices_combined(field_data: dict, out_dir: str | Path, title: str
         fig.savefig(out_dir / f"{stype}.png", dpi=300)
         plt.close(fig)
 
-def analyse_crossing(key: str, crossing: dict, data_dict: dict, save_root: Path, f_010: float, voxel_res: int, create_fields: bool = True) -> dict:
+
+def _save_one_2x4_slice_pdf(
+    slice_dict: dict[str, np.ndarray],
+    stype: str,
+    out_dir: str | Path,
+    pdf_name: str,
+) -> Path:
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    rows = [
+        ("E1_Ez", "E2_Ez", "Ez_minus", "Ez_plus"),
+        ("abs_E1", "abs_E2", "abs_minus", "abs_plus"),
+    ]
+
+    column_titles = [r"$E_1$", r"$E_2$", r"$E_-$", r"$E_+$"]
+    row_titles = [
+        r"$E_z/E_{z,\mathrm{ref}}$",
+        r"$|E|/|E|_{\mathrm{ref}}$",
+    ]
+
+    title_map = {
+        "iris_1": "Transverse iris 1",
+        "iris_2": "Transverse iris 2",
+        "longitudinal_mid": "Longitudinal vertical mid-plane",
+        "transverse_mid": "Transverse mid-plane",
+    }
+
+    def _real_image(arr):
+        return np.real(np.asarray(arr))
+
+    def _plot_orient(arr, stype):
+        return arr.T if stype.startswith("iris") or stype == "transverse_mid" else arr
+
+    def _safe_ref(arrays):
+        ref = max(float(np.nanmax(np.abs(a))) for a in arrays)
+        return ref if np.isfinite(ref) and ref > 0 else 1.0
+
+    def _safe_vmax(arrays, ref):
+        scaled_max = max(float(np.nanmax(np.abs(a / ref))) for a in arrays)
+        return max(1.0, scaled_max) if np.isfinite(scaled_max) and scaled_max > 0 else 1.0
+
+    print(f"{slice_dict.keys() = }")
+    print(f"E1_Ez_{stype}")
+
+    parent_ez_ref = _safe_ref([
+        _real_image(slice_dict[f"E1_Ez_{stype}"]),
+        _real_image(slice_dict[f"E2_Ez_{stype}"]),
+    ])
+
+    parent_abs_ref = _safe_ref([
+        _real_image(slice_dict[f"abs_E1_{stype}"]),
+        _real_image(slice_dict[f"abs_E2_{stype}"]),
+    ])
+
+    fig = plt.figure(figsize=(7.2, 3.25), constrained_layout=False)
+
+    gs = fig.add_gridspec(
+        2,
+        5,
+        width_ratios=[1, 1, 1, 1, 0.045],
+        left=0.075,
+        right=0.965,
+        bottom=0.08,
+        top=0.86,
+        wspace=0.0,
+        hspace=0.1,
+    )
+
+    fig.suptitle(title_map.get(stype, stype), fontsize=12, fontweight="bold", y=0.965)
+
+    for r, row_keys in enumerate(rows):
+        raw_row_data = [_real_image(slice_dict[f"{k}_{stype}"]) for k in row_keys]
+
+        if r == 0:
+            ref = parent_ez_ref
+            row_data = [arr / ref for arr in raw_row_data]
+            vmax = _safe_vmax(raw_row_data, ref)
+            vmin = -vmax
+            cmap = "RdBu_r"
+        else:
+            ref = parent_abs_ref
+            row_data = [arr / ref for arr in raw_row_data]
+            vmin = 0.0
+            vmax = _safe_vmax(raw_row_data, ref)
+            cmap = "viridis"
+
+        im = None
+
+        for c, (arr_raw, arr_scaled) in enumerate(zip(raw_row_data, row_data)):
+            ax = fig.add_subplot(gs[r, c])
+            ax.set_anchor("C")
+
+            plot_arr = _plot_orient(arr_scaled, stype)
+
+            im = ax.imshow(
+                plot_arr,
+                origin="lower",
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                aspect="equal",
+            )
+
+            ny, nx = plot_arr.shape
+            ax.set_box_aspect(ny / nx)
+            ax.margins(0)
+
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+            if r == 0:
+                ax.set_title(column_titles[c], fontsize=10, fontweight="bold", pad=2)
+
+            if c == 0:
+                ax.set_ylabel(row_titles[r], fontsize=9, rotation=90, labelpad=7)
+
+            ax.text(
+                0.04,
+                0.96,
+                f"{np.nanmax(np.abs(arr_scaled)):.2f}",
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=8,
+                bbox=dict(facecolor="white", edgecolor="none", alpha=0.75, pad=1.2),
+            )
+
+        cax = fig.add_subplot(gs[r, 4])
+        cb = fig.colorbar(im, cax=cax)
+        cb.ax.tick_params(labelsize=7, length=2, pad=1)
+
+    out_file = out_dir / pdf_name
+    fig.savefig(out_file, format="pdf", bbox_inches="tight", pad_inches=0.02)
+    plt.close(fig)
+
+    print(f"Wrote {out_file}")
+    return out_file
+
+def save_four_slice_pdfs_and_merge(
+    slice_dict: dict[str, np.ndarray],
+    out_dir: str | Path,
+    merged_pdf_name: str = "combined_four_slice_summary.pdf",
+) -> Path:
+    """
+    Save one tall single-page PDF containing all four 2x4 slice summaries.
+
+    Output location and final filename are unchanged, e.g.
+        TM012_TM020/slice_summary_pdfs/TM012_TM020_field_summary.pdf
+
+    The old individual page PDFs are no longer needed.
+    """
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    specs = [
+        ("iris_1", "Transverse iris 1"),
+        ("iris_2", "Transverse iris 2"),
+        ("longitudinal_mid", "Longitudinal vertical mid-plane"),
+        ("transverse_mid", "Transverse mid-plane"),
+    ]
+
+    rows = [
+        ("E1_Ez", "E2_Ez", "Ez_minus", "Ez_plus"),
+        ("abs_E1", "abs_E2", "abs_minus", "abs_plus"),
+    ]
+
+    column_titles = [r"$E_1$", r"$E_2$", r"$E_-$", r"$E_+$"]
+    row_titles = [
+        r"$E_z/E_{z,\mathrm{ref}}$",
+        r"$|E|/|E|_{\mathrm{ref}}$",
+    ]
+
+    def _real_image(arr):
+        return np.real(np.asarray(arr))
+
+    def _plot_orient(arr, stype):
+        return arr.T if stype.startswith("iris") or stype == "transverse_mid" else arr
+
+    def _safe_ref(arrays):
+        ref = max(float(np.nanmax(np.abs(a))) for a in arrays)
+        return ref if np.isfinite(ref) and ref > 0 else 1.0
+
+    def _safe_vmax(arrays, ref):
+        scaled_max = max(float(np.nanmax(np.abs(a / ref))) for a in arrays)
+        return max(1.0, scaled_max) if np.isfinite(scaled_max) and scaled_max > 0 else 1.0
+
+    # Tall but still comfortable when included at ~0.75 textwidth in LaTeX.
+    fig = plt.figure(figsize=(7.2, 12.4), constrained_layout=False)
+
+    outer = fig.add_gridspec(
+        4,
+        1,
+        left=0.075,
+        right=0.965,
+        bottom=0.025,
+        top=0.975,
+        hspace=0.18,
+    )
+
+    for block_idx, (stype, block_title) in enumerate(specs):
+        gs = outer[block_idx, 0].subgridspec(
+            2,
+            5,
+            width_ratios=[1, 1, 1, 1, 0.045],
+            height_ratios=[1, 1],
+            wspace=0.0,
+            hspace=0.08,
+        )
+
+        parent_ez_ref = _safe_ref([
+            _real_image(slice_dict[f"E1_Ez_{stype}"]),
+            _real_image(slice_dict[f"E2_Ez_{stype}"]),
+        ])
+
+        parent_abs_ref = _safe_ref([
+            _real_image(slice_dict[f"abs_E1_{stype}"]),
+            _real_image(slice_dict[f"abs_E2_{stype}"]),
+        ])
+
+        first_ax = None
+
+        for r, row_keys in enumerate(rows):
+            raw_row_data = [_real_image(slice_dict[f"{k}_{stype}"]) for k in row_keys]
+
+            if r == 0:
+                ref = parent_ez_ref
+                row_data = [arr / ref for arr in raw_row_data]
+                vmax = _safe_vmax(raw_row_data, ref)
+                vmin = -vmax
+                cmap = "RdBu_r"
+            else:
+                ref = parent_abs_ref
+                row_data = [arr / ref for arr in raw_row_data]
+                vmin = 0.0
+                vmax = _safe_vmax(raw_row_data, ref)
+                cmap = "viridis"
+
+            im = None
+
+            for c, (arr_raw, arr_scaled) in enumerate(zip(raw_row_data, row_data)):
+                ax = fig.add_subplot(gs[r, c])
+
+                if first_ax is None:
+                    first_ax = ax
+
+                ax.set_anchor("C")
+
+                plot_arr = _plot_orient(arr_scaled, stype)
+
+                im = ax.imshow(
+                    plot_arr,
+                    origin="lower",
+                    cmap=cmap,
+                    vmin=vmin,
+                    vmax=vmax,
+                    aspect="equal",
+                )
+
+                ny, nx = plot_arr.shape
+                ax.set_box_aspect(ny / nx)
+                ax.margins(0)
+
+                ax.set_xticks([])
+                ax.set_yticks([])
+
+                if r == 0:
+                    ax.set_title(
+                        column_titles[c],
+                        fontsize=10,
+                        fontweight="bold",
+                        pad=2,
+                    )
+
+                if c == 0:
+                    ax.set_ylabel(
+                        row_titles[r],
+                        fontsize=9,
+                        rotation=90,
+                        labelpad=7,
+                    )
+
+                ax.text(
+                    0.04,
+                    0.96,
+                    f"{np.nanmax(np.abs(arr_scaled)):.2f}",
+                    transform=ax.transAxes,
+                    ha="left",
+                    va="top",
+                    fontsize=8,
+                    bbox=dict(
+                        facecolor="white",
+                        edgecolor="none",
+                        alpha=0.75,
+                        pad=1.2,
+                    ),
+                )
+
+            cax = fig.add_subplot(gs[r, 4])
+            cb = fig.colorbar(im, cax=cax)
+            cb.ax.tick_params(labelsize=7, length=2, pad=1)
+
+        if first_ax is not None:
+            first_ax.text(
+                0.0,
+                1.12,
+                block_title,
+                transform=first_ax.transAxes,
+                ha="left",
+                va="bottom",
+                fontsize=12,
+                fontweight="bold",
+                clip_on=False,
+            )
+
+    out_file = out_dir / merged_pdf_name
+    fig.savefig(out_file, format="pdf", bbox_inches="tight", pad_inches=0.02)
+    plt.close(fig)
+
+    print(f"Wrote single-page summary PDF {out_file}")
+    return out_file
+
+def analyse_crossing(
+    key: str,
+    crossing: dict,
+    data_dict: dict,
+    save_root: Path,
+    f_010: float,
+    voxel_res: int,
+    create_fields: bool = True,
+) -> dict:
+
     mode_i = crossing["mode_i"].split("_", 1)[1]
     mode_j = crossing["mode_j"].split("_", 1)[1]
+
     out_dir = save_root / f"TM{mode_i}_TM{mode_j}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    raw_i = data_dict["TM"][mode_i]["3D_Efield"]
-    raw_j = data_dict["TM"][mode_j]["3D_Efield"]
+    if create_fields:
+        raw_i = data_dict["TM"][mode_i]["3D_Efield"]
+        raw_j = data_dict["TM"][mode_j]["3D_Efield"]
 
-    rot_i = hamm.align_field_to_vertical_plane(raw_i, out_plot=str(out_dir / f"TM{mode_i}_theta_r_rotation.png"), label=f"TM{mode_i}")
-    rot_j = hamm.align_field_to_vertical_plane(raw_j, out_plot=str(out_dir / f"TM{mode_j}_theta_r_rotation.png"), label=f"TM{mode_j}")
+        rot_i = hamm.align_field_to_vertical_plane(
+            raw_i,
+            out_plot=str(out_dir / f"TM{mode_i}_theta_r_rotation.png"),
+            label=f"TM{mode_i}",
+        )
 
-    E1 = {"Ex": rot_i["Ex"], "Ey": rot_i["Ey"], "Ez": rot_i["Ez"]}
-    E2 = {"Ex": rot_j["Ex"], "Ey": rot_j["Ey"], "Ez": rot_j["Ez"]}
-    field_data = hamm.combine_fields(E1, E2)
-    hamm.save_field_data_npz(field_data, str(out_dir / "field_data.npz"))
-    hamm.pickle_save(hamm.extract_slices(field_data), out_dir / "slice_dict.pkl")
-    hamm.plot_field_slices(field_data, str(out_dir / "plots"), title=f"TM{mode_i} / TM{mode_j}")
-    plot_field_slices_combined(field_data, out_dir / "combined_plots", title=f"TM{mode_i} / TM{mode_j}")
+        rot_j = hamm.align_field_to_vertical_plane(
+            raw_j,
+            out_plot=str(out_dir / f"TM{mode_j}_theta_r_rotation.png"),
+            label=f"TM{mode_j}",
+        )
+
+        E1 = {"Ex": rot_i["Ex"], "Ey": rot_i["Ey"], "Ez": rot_i["Ez"]}
+        E2 = {"Ex": rot_j["Ex"], "Ey": rot_j["Ey"], "Ez": rot_j["Ez"]}
+
+        field_data = hamm.combine_fields(E1, E2)
+        hamm.save_field_data_npz(field_data, str(out_dir / "field_data.npz"))
+
+        slice_dict = hamm.extract_slices(field_data)
+        hamm.pickle_save(slice_dict, out_dir / "slice_dict.pkl")
+
+        # hamm.plot_field_slices(
+        #     field_data,
+        #     str(out_dir / "plots"),
+        #     title=f"TM{mode_i} / TM{mode_j}",
+        # )
+
+        plot_field_slices_combined(
+            field_data,
+            out_dir / "combined_plots",
+            title=f"TM{mode_i} / TM{mode_j}",
+        )
+
+    else:
+        field_data = hamm.load_field_data_npz(str(out_dir / "field_data.npz"))
+        slice_dict = hamm.pickle_load(out_dir / "slice_dict.pkl")
+
+        rot_i = {
+            "rotation_angle_deg": None,
+            "peak_before": None,
+            "peak_after": None,
+        }
+        rot_j = {
+            "rotation_angle_deg": None,
+            "peak_before": None,
+            "peak_after": None,
+        }
+
+        raw_i = data_dict["TM"][mode_i]["3D_Efield"]
+        raw_j = data_dict["TM"][mode_j]["3D_Efield"]
+
+    merged_slice_pdf = save_four_slice_pdfs_and_merge(
+        slice_dict=slice_dict,
+        out_dir=out_dir / "slice_summary_pdfs",
+        merged_pdf_name=f"TM{mode_i}_TM{mode_j}_field_summary.pdf",
+    )
 
     f_cross = float(crossing["frequency_Hz"])
     lf_cross = float(crossing["length_factor"])
     Req_m = hamm.pillbox_radius_from_freq(f_010)
 
     kick_jobs = {
-        "E1": (field_data["E1_Ez"], data_dict["TM"][mode_i]["design_frequency_Hz"], 1.0),
-        "E2": (field_data["E2_Ez"], data_dict["TM"][mode_j]["design_frequency_Hz"], 1.0),
-        "plus": (field_data["Ez_plus"], f_cross, lf_cross),
-        "minus": (field_data["Ez_minus"], f_cross, lf_cross),
+        "E1": (
+            field_data["E1_Ez"],
+            data_dict["TM"][mode_i]["design_frequency_Hz"],
+            1.0,
+        ),
+        "E2": (
+            field_data["E2_Ez"],
+            data_dict["TM"][mode_j]["design_frequency_Hz"],
+            1.0,
+        ),
+        "plus": (
+            field_data["Ez_plus"],
+            f_cross,
+            lf_cross,
+        ),
+        "minus": (
+            field_data["Ez_minus"],
+            f_cross,
+            lf_cross,
+        ),
     }
 
     kicks = {}
+
     for name, (Ez, freq, lf) in kick_jobs.items():
         kicks[name] = hamm.kick_from_Ez_field(
             Ez,
@@ -263,21 +661,42 @@ def analyse_crossing(key: str, crossing: dict, data_dict: dict, save_root: Path,
         "mode_j": mode_j,
         "component_summary_i": component_summary(raw_i),
         "component_summary_j": component_summary(raw_j),
-        "rotation_i": {"angle_deg": rot_i["rotation_angle_deg"], "peak_before": rot_i["peak_before"], "peak_after": rot_i["peak_after"]},
-        "rotation_j": {"angle_deg": rot_j["rotation_angle_deg"], "peak_before": rot_j["peak_before"], "peak_after": rot_j["peak_after"]},
+        "rotation_i": {
+            "angle_deg": rot_i["rotation_angle_deg"],
+            "peak_before": rot_i["peak_before"],
+            "peak_after": rot_i["peak_after"],
+        },
+        "rotation_j": {
+            "angle_deg": rot_j["rotation_angle_deg"],
+            "peak_before": rot_j["peak_before"],
+            "peak_after": rot_j["peak_after"],
+        },
         "kick_units": "V/C/m/m",
         "kicks": kicks,
-        "files": {"field_data_npz": str(out_dir / "field_data.npz"), "plots": str(out_dir / "plots")},
+        "files": {
+            "field_data_npz": str(out_dir / "field_data.npz"),
+            "slice_dict": str(out_dir / "slice_dict.pkl"),
+            "plots": str(out_dir / "plots"),
+            "combined_plots": str(out_dir / "combined_plots"),
+            "slice_summary_pdfs": str(out_dir / "slice_summary_pdfs"),
+            "merged_slice_pdf": str(merged_slice_pdf),
+        },
     }
+
     hamm.pickle_save(analysis, out_dir / "crossing_analysis.pkl")
 
     print(f"\n{key}")
     print(f"  TM{mode_i} rotation: {analysis['rotation_i']}")
     print(f"  TM{mode_j} rotation: {analysis['rotation_j']}")
-    for name, k in kicks.items():
-        print(f"  {name:5s} kick = {k['kick_V_per_C_per_m_per_m']:.6e} V/C/m/m")
-    return analysis
+    print(f"  merged field summary PDF: {merged_slice_pdf}")
 
+    for name, k in kicks.items():
+        print(
+            f"  {name:5s} kick = "
+            f"{k['kick_V_per_C_per_m_per_m']:.6e} V/C/m/m"
+        )
+
+    return analysis
 
 def main():
     # Edit these two paths for your machine.
@@ -287,7 +706,7 @@ def main():
     n_max, p_max = 3, 3
     voxel_res = 151
     f_010 = 1.3e9
-    create_data = True
+    create_data = False
     create_fields = True
 
     datapath.mkdir(parents=True, exist_ok=True)

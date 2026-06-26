@@ -284,13 +284,31 @@ def save_field_data_npz(field_data: dict, filename: str):
     np.savez_compressed(filename, **field_data)
 
 
-def extract_slices(field_data: dict) -> dict:
+def extract_slices(field_data: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """
+    Extract commonly used 2D slices from each 3D field.
+
+    Generated slices:
+        *_iris_1            F[:, :, 0]
+        *_iris_2            F[:, :, -1]
+        *_transverse_mid    F[:, :, mid_z]
+        *_longitudinal_mid  F[mid_x, :, :]
+    """
+
     slices = {}
-    for k, F in field_data.items():
-        if isinstance(F, np.ndarray) and F.ndim == 3:
-            midx, midz = F.shape[0]//2, F.shape[2]//2
-            slices[f"{k}_transverse_mid"] = F[:, :, midz]
-            slices[f"{k}_longitudinal_mid"] = F[midx, :, :]
+
+    for key, F in field_data.items():
+        if not (isinstance(F, np.ndarray) and F.ndim == 3):
+            continue
+
+        midx = F.shape[0] // 2
+        midz = F.shape[2] // 2
+
+        slices[f"{key}_iris_1"] = F[:, :, 0]
+        slices[f"{key}_iris_2"] = F[:, :, -1]
+        slices[f"{key}_transverse_mid"] = F[:, :, midz]
+        slices[f"{key}_longitudinal_mid"] = F[midx, :, :]
+
     return slices
 
 

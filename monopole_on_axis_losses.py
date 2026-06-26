@@ -19,6 +19,8 @@ from scipy import special
 from scipy.optimize import brentq
 from scipy.special import jn_zeros, jnp_zeros
 
+from matplotlib.backends.backend_pdf import PdfPages
+
 C0 = 299_792_458.0
 
 
@@ -557,13 +559,7 @@ def analyse_crossing(
         item["Vz_V"] = Vz
         item["loss"] = loss
 
-    summary = {
-        "crossing": crossing,
-        "modes": {"E1": f"{fam_i}_{mnp_i}", "E2": f"{fam_j}_{mnp_j}"},
-        "lengths_m": {"design": design_length_m, "mixed": mixed_length_m},
-        "analysis": analyses,
-    }
-    pickle_save(summary, out_dir / "crossing_analysis.pkl")
+    summary_pdf = None
 
     if make_plots:
         slice_dict = extract_3d_field_slices(field_data)
@@ -571,6 +567,32 @@ def analyse_crossing(
         plot_all_plus(slice_dict, out_dir / "TM_plus")
         plot_all_minus(slice_dict, out_dir / "TM_minus")
         plot_all_plus_minus_combined(slice_dict, out_dir / "TM_combined")
+
+        summary_pdf = save_four_slice_pdfs_and_merge(
+            slice_dict=slice_dict,
+            out_dir=out_dir / "slice_summary_pdfs",
+            merged_pdf_name=f"TM{mnp_i}_TM{mnp_j}_field_summary.pdf",
+        )
+
+    summary = {
+        "crossing": crossing,
+        "modes": {
+            "E1": f"{fam_i}_{mnp_i}",
+            "E2": f"{fam_j}_{mnp_j}",
+        },
+        "lengths_m": {
+            "design": design_length_m,
+            "mixed": mixed_length_m,
+        },
+        "analysis": analyses,
+        "files": {
+            "slice_dict": str(out_dir / "slice_dict.pkl"),
+            "merged_slice_pdf": str(summary_pdf) if summary_pdf is not None else None,
+            "slice_summary_dir": str(out_dir / "slice_summary_pdfs"),
+        },
+    }
+
+    pickle_save(summary, out_dir / "crossing_analysis.pkl")
 
     return summary
 
@@ -674,6 +696,162 @@ def _plot_slice_group(slice_dict: dict[str, np.ndarray], save_directory_fname: s
 
         fig.savefig(save_directory_fname / f"{op}_{stype}.png", dpi=300)
         plt.close(fig)
+
+def _plot_slice_group_combined_A4_pdf(
+    slice_dict: dict[str, np.ndarray],
+    save_directory_fname: str | Path,
+    pdf_name: str = "combined_A4_summary.pdf",
+) -> None:
+
+    save_directory_fname = Path(save_directory_fname)
+    save_directory_fname.mkdir(parents=True, exist_ok=True)
+
+    slice_types = ["iris_1", "iris_2", "transverse_mid", "longitudinal_mid"]
+
+    rows = [
+        ("E1_Ez", "E2_Ez", "Ez_minus", "Ez_plus"),
+        ("abs_E1", "abs_E2", "abs_minus", "abs_plus"),
+    ]
+
+    column_titles = [r"$E_1$", r"$E_2$", r"$E_-$", r"$E_+$"]
+    row_titles = [r"$E_z/E_{z,\mathrm{ref}}$", r"$|E|/|E|_{\mathrm{ref}}$"]
+
+    block_titles = {
+        "iris_1": "Iris 1",
+        "iris_2": "Iris 2",
+        "transverse_mid": "Transverse mid-plane",
+        "longitudinal_mid": "Longitudinal mid-plane",
+    }
+
+    def _real_image(arr):
+        return np.real(np.asarray(arr))
+
+    def _plot_orient(arr, stype):
+        return arr.T if stype.startswith("iris") or stype == "transverse_mid" else arr
+
+    def _safe_ref(arrays):
+        ref = max(float(np.nanmax(np.abs(a))) for a in arrays)
+        return ref if np.isfinite(ref) and ref > 0.0 else 1.0
+
+    def _safe_vmax(arrays, ref):
+        scaled_max = max(float(np.nanmax(np.abs(a / ref))) for a in arrays)
+        return max(1.0, scaled_max) if np.isfinite(scaled_max) and scaled_max > 0.0 else 1.0
+
+    # Shorter than A4 so LaTeX has room above for a table.
+    fig = plt.figure(figsize=(8.27, 7.2), constrained_layout=False)
+
+    outer = fig.add_gridspec(
+        4,
+        1,
+        left=0.08,
+        right=0.96,
+        bottom=0.03,
+        top=0.96,
+        hspace=0.30,
+    )
+
+    for block_index, stype in enumerate(slice_types):
+        inner = outer[block_index, 0].subgridspec(
+            2,
+            5,
+            width_ratios=[1, 1, 1, 1, 0.03],
+            height_ratios=[1, 1],
+            wspace=0.00,
+            hspace=0.1,
+        )
+
+        axes = np.empty((2, 4), dtype=object)
+
+        parent_ez_ref = _safe_ref([
+            _real_image(slice_dict[f"E1_Ez_{stype}"]),
+            _real_image(slice_dict[f"E2_Ez_{stype}"]),
+        ])
+
+        parent_abs_ref = _safe_ref([
+            _real_image(slice_dict[f"abs_E1_{stype}"]),
+            _real_image(slice_dict[f"abs_E2_{stype}"]),
+        ])
+
+        for r, row_keys in enumerate(rows):
+            raw_row_data = [_real_image(slice_dict[f"{k}_{stype}"]) for k in row_keys]
+            is_abs_row = r == 1
+
+            if is_abs_row:
+                ref = parent_abs_ref
+                row_data = [arr / ref for arr in raw_row_data]
+                vmin, vmax, cmap = 0.0, _safe_vmax(raw_row_data, ref), "viridis"
+            else:
+                ref = parent_ez_ref
+                row_data = [arr / ref for arr in raw_row_data]
+                vmax = _safe_vmax(raw_row_data, ref)
+                vmin, cmap = -vmax, "RdBu_r"
+
+            im = None
+
+            for c, (arr_raw, arr_scaled) in enumerate(zip(raw_row_data, row_data)):
+                ax = fig.add_subplot(inner[r, c])
+                axes[r, c] = ax
+
+                plot_arr = _plot_orient(arr_scaled, stype)
+
+                im = ax.imshow(
+                    plot_arr,
+                    origin="lower",
+                    cmap=cmap,
+                    vmin=vmin,
+                    vmax=vmax,
+                    aspect="equal",
+                )
+                ax.margins(0)
+                ax.set_anchor("C")
+
+                # Make the axes exactly the size of the image.
+                ny, nx = plot_arr.shape
+                ax.set_box_aspect(ny / nx)
+                ax.set_xticks([])
+                ax.set_yticks([])
+
+                for spine in ax.spines.values():
+                    spine.set_linewidth(0.2)
+
+                if r == 0:
+                    ax.set_title(column_titles[c], fontsize=9, fontweight="bold", pad=2)
+
+                if c == 0:
+                    ax.set_ylabel(row_titles[r], fontsize=8, rotation=90, labelpad=7)
+
+                ax.text(
+                    0.04,
+                    0.96,
+                    f"{np.nanmax(np.abs(arr_scaled)):.2f}",
+                    transform=ax.transAxes,
+                    ha="left",
+                    va="top",
+                    fontsize=6.5,
+                    bbox=dict(facecolor="white", edgecolor="none", alpha=0.70, pad=1.0),
+                )
+
+            cax = fig.add_subplot(inner[r, 4])
+            cb = fig.colorbar(im, cax=cax)
+            cb.ax.tick_params(labelsize=6, length=2, pad=1)
+
+        axes[0, 0].text(
+            0.0,
+            1.22,
+            block_titles.get(stype, stype),
+            transform=axes[0, 0].transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=9,
+            fontweight="bold",
+            clip_on=False,
+        )
+
+    out_file = save_directory_fname / pdf_name
+    fig.savefig(out_file, format="pdf", bbox_inches="tight", pad_inches=0.02)
+    plt.close(fig)
+
+    print(f"Wrote {out_file}")
 
 def _plot_slice_group_combined(slice_dict: dict[str, np.ndarray], save_directory_fname: str | Path) -> None:
     """Save 4x4 combined plots with columns [E1, E2, E+, E-].
@@ -820,6 +998,327 @@ def _plot_slice_group_combined(slice_dict: dict[str, np.ndarray], save_directory
         plt.close(fig)
 
 
+
+
+def _save_one_2x4_slice_pdf(
+    slice_dict: dict[str, np.ndarray],
+    stype: str,
+    out_dir: str | Path,
+    pdf_name: str,
+) -> Path:
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    rows = [
+        ("E1_Ez", "E2_Ez", "Ez_minus", "Ez_plus"),
+        ("abs_E1", "abs_E2", "abs_minus", "abs_plus"),
+    ]
+
+    column_titles = [r"$E_1$", r"$E_2$", r"$E_-$", r"$E_+$"]
+    row_titles = [
+        r"$E_z/E_{z,\mathrm{ref}}$",
+        r"$|E|/|E|_{\mathrm{ref}}$",
+    ]
+
+    title_map = {
+        "iris_1": "Transverse iris 1",
+        "iris_2": "Transverse iris 2",
+        "longitudinal_mid": "Longitudinal vertical mid-plane",
+        "transverse_mid": "Transverse mid-plane",
+    }
+
+    def _real_image(arr):
+        return np.real(np.asarray(arr))
+
+    def _plot_orient(arr, stype):
+        return arr.T if stype.startswith("iris") or stype == "transverse_mid" else arr
+
+    def _safe_ref(arrays):
+        ref = max(float(np.nanmax(np.abs(a))) for a in arrays)
+        return ref if np.isfinite(ref) and ref > 0 else 1.0
+
+    def _safe_vmax(arrays, ref):
+        scaled_max = max(float(np.nanmax(np.abs(a / ref))) for a in arrays)
+        return max(1.0, scaled_max) if np.isfinite(scaled_max) and scaled_max > 0 else 1.0
+
+    parent_ez_ref = _safe_ref([
+        _real_image(slice_dict[f"E1_Ez_{stype}"]),
+        _real_image(slice_dict[f"E2_Ez_{stype}"]),
+    ])
+
+    parent_abs_ref = _safe_ref([
+        _real_image(slice_dict[f"abs_E1_{stype}"]),
+        _real_image(slice_dict[f"abs_E2_{stype}"]),
+    ])
+
+    fig = plt.figure(figsize=(7.2, 3.25), constrained_layout=False)
+
+    gs = fig.add_gridspec(
+        2,
+        5,
+        width_ratios=[1, 1, 1, 1, 0.045],
+        left=0.075,
+        right=0.965,
+        bottom=0.08,
+        top=0.86,
+        wspace=0.0,
+        hspace=0.1,
+    )
+
+    fig.suptitle(title_map.get(stype, stype), fontsize=12, fontweight="bold", y=0.965)
+
+    for r, row_keys in enumerate(rows):
+        raw_row_data = [_real_image(slice_dict[f"{k}_{stype}"]) for k in row_keys]
+
+        if r == 0:
+            ref = parent_ez_ref
+            row_data = [arr / ref for arr in raw_row_data]
+            vmax = _safe_vmax(raw_row_data, ref)
+            vmin = -vmax
+            cmap = "RdBu_r"
+        else:
+            ref = parent_abs_ref
+            row_data = [arr / ref for arr in raw_row_data]
+            vmin = 0.0
+            vmax = _safe_vmax(raw_row_data, ref)
+            cmap = "viridis"
+
+        im = None
+
+        for c, (arr_raw, arr_scaled) in enumerate(zip(raw_row_data, row_data)):
+            ax = fig.add_subplot(gs[r, c])
+            ax.set_anchor("C")
+
+            plot_arr = _plot_orient(arr_scaled, stype)
+
+            im = ax.imshow(
+                plot_arr,
+                origin="lower",
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                aspect="equal",
+            )
+
+            ny, nx = plot_arr.shape
+            ax.set_box_aspect(ny / nx)
+            ax.margins(0)
+
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+            if r == 0:
+                ax.set_title(column_titles[c], fontsize=10, fontweight="bold", pad=2)
+
+            if c == 0:
+                ax.set_ylabel(row_titles[r], fontsize=9, rotation=90, labelpad=7)
+
+            ax.text(
+                0.04,
+                0.96,
+                f"{np.nanmax(np.abs(arr_scaled)):.2f}",
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=8,
+                bbox=dict(facecolor="white", edgecolor="none", alpha=0.75, pad=1.2),
+            )
+
+        cax = fig.add_subplot(gs[r, 4])
+        cb = fig.colorbar(im, cax=cax)
+        cb.ax.tick_params(labelsize=7, length=2, pad=1)
+
+    out_file = out_dir / pdf_name
+    fig.savefig(out_file, format="pdf", bbox_inches="tight", pad_inches=0.02)
+    plt.close(fig)
+
+    print(f"Wrote {out_file}")
+    return out_file
+
+def save_four_slice_pdfs_and_merge(
+    slice_dict: dict[str, np.ndarray],
+    out_dir: str | Path,
+    merged_pdf_name: str = "combined_four_slice_summary.pdf",
+) -> Path:
+    """
+    Save one tall single-page PDF containing all four 2x4 slice summaries.
+
+    Output location and final filename are unchanged, e.g.
+        TM012_TM020/slice_summary_pdfs/TM012_TM020_field_summary.pdf
+
+    The old individual page PDFs are no longer needed.
+    """
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    specs = [
+        ("iris_1", "Transverse iris 1"),
+        ("iris_2", "Transverse iris 2"),
+        ("longitudinal_mid", "Longitudinal vertical mid-plane"),
+        ("transverse_mid", "Transverse mid-plane"),
+    ]
+
+    rows = [
+        ("E1_Ez", "E2_Ez", "Ez_minus", "Ez_plus"),
+        ("abs_E1", "abs_E2", "abs_minus", "abs_plus"),
+    ]
+
+    column_titles = [r"$E_1$", r"$E_2$", r"$E_-$", r"$E_+$"]
+    row_titles = [
+        r"$E_z/E_{z,\mathrm{ref}}$",
+        r"$|E|/|E|_{\mathrm{ref}}$",
+    ]
+
+    def _real_image(arr):
+        return np.real(np.asarray(arr))
+
+    def _plot_orient(arr, stype):
+        return arr.T if stype.startswith("iris") or stype == "transverse_mid" else arr
+
+    def _safe_ref(arrays):
+        ref = max(float(np.nanmax(np.abs(a))) for a in arrays)
+        return ref if np.isfinite(ref) and ref > 0 else 1.0
+
+    def _safe_vmax(arrays, ref):
+        scaled_max = max(float(np.nanmax(np.abs(a / ref))) for a in arrays)
+        return max(1.0, scaled_max) if np.isfinite(scaled_max) and scaled_max > 0 else 1.0
+
+    # Tall but still comfortable when included at ~0.75 textwidth in LaTeX.
+    fig = plt.figure(figsize=(7.2, 12.4), constrained_layout=False)
+
+    outer = fig.add_gridspec(
+        4,
+        1,
+        left=0.075,
+        right=0.965,
+        bottom=0.025,
+        top=0.975,
+        hspace=0.18,
+    )
+
+    for block_idx, (stype, block_title) in enumerate(specs):
+        gs = outer[block_idx, 0].subgridspec(
+            2,
+            5,
+            width_ratios=[1, 1, 1, 1, 0.045],
+            height_ratios=[1, 1],
+            wspace=0.0,
+            hspace=0.08,
+        )
+
+        parent_ez_ref = _safe_ref([
+            _real_image(slice_dict[f"E1_Ez_{stype}"]),
+            _real_image(slice_dict[f"E2_Ez_{stype}"]),
+        ])
+
+        parent_abs_ref = _safe_ref([
+            _real_image(slice_dict[f"abs_E1_{stype}"]),
+            _real_image(slice_dict[f"abs_E2_{stype}"]),
+        ])
+
+        first_ax = None
+
+        for r, row_keys in enumerate(rows):
+            raw_row_data = [_real_image(slice_dict[f"{k}_{stype}"]) for k in row_keys]
+
+            if r == 0:
+                ref = parent_ez_ref
+                row_data = [arr / ref for arr in raw_row_data]
+                vmax = _safe_vmax(raw_row_data, ref)
+                vmin = -vmax
+                cmap = "RdBu_r"
+            else:
+                ref = parent_abs_ref
+                row_data = [arr / ref for arr in raw_row_data]
+                vmin = 0.0
+                vmax = _safe_vmax(raw_row_data, ref)
+                cmap = "viridis"
+
+            im = None
+
+            for c, (arr_raw, arr_scaled) in enumerate(zip(raw_row_data, row_data)):
+                ax = fig.add_subplot(gs[r, c])
+
+                if first_ax is None:
+                    first_ax = ax
+
+                ax.set_anchor("C")
+
+                plot_arr = _plot_orient(arr_scaled, stype)
+
+                im = ax.imshow(
+                    plot_arr,
+                    origin="lower",
+                    cmap=cmap,
+                    vmin=vmin,
+                    vmax=vmax,
+                    aspect="equal",
+                )
+
+                ny, nx = plot_arr.shape
+                ax.set_box_aspect(ny / nx)
+                ax.margins(0)
+
+                ax.set_xticks([])
+                ax.set_yticks([])
+
+                if r == 0:
+                    ax.set_title(
+                        column_titles[c],
+                        fontsize=10,
+                        fontweight="bold",
+                        pad=2,
+                    )
+
+                if c == 0:
+                    ax.set_ylabel(
+                        row_titles[r],
+                        fontsize=9,
+                        rotation=90,
+                        labelpad=7,
+                    )
+
+                ax.text(
+                    0.04,
+                    0.96,
+                    f"{np.nanmax(np.abs(arr_scaled)):.2f}",
+                    transform=ax.transAxes,
+                    ha="left",
+                    va="top",
+                    fontsize=8,
+                    bbox=dict(
+                        facecolor="white",
+                        edgecolor="none",
+                        alpha=0.75,
+                        pad=1.2,
+                    ),
+                )
+
+            cax = fig.add_subplot(gs[r, 4])
+            cb = fig.colorbar(im, cax=cax)
+            cb.ax.tick_params(labelsize=7, length=2, pad=1)
+
+        if first_ax is not None:
+            first_ax.text(
+                0.0,
+                1.12,
+                block_title,
+                transform=first_ax.transAxes,
+                ha="left",
+                va="bottom",
+                fontsize=12,
+                fontweight="bold",
+                clip_on=False,
+            )
+
+    out_file = out_dir / merged_pdf_name
+    fig.savefig(out_file, format="pdf", bbox_inches="tight", pad_inches=0.02)
+    plt.close(fig)
+
+    print(f"Wrote single-page summary PDF {out_file}")
+    return out_file
 # -----------------------------------------------------------------------------
 # Main script configuration
 # -----------------------------------------------------------------------------

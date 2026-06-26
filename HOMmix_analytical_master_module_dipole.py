@@ -252,171 +252,34 @@ def save_field_data_npz(field_data: dict, filename: str):
     np.savez_compressed(filename, **field_data)
 
 
-def extract_slices(field_data: dict) -> dict:
+def extract_slices(field_data: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    """
+    Extract commonly used 2D slices from each 3D field.
+
+    Generated slices:
+        *_iris_1            F[:, :, 0]
+        *_iris_2            F[:, :, -1]
+        *_transverse_mid    F[:, :, mid_z]
+        *_longitudinal_mid  F[mid_x, :, :]
+    """
+
     slices = {}
-    for k, F in field_data.items():
-        if isinstance(F, np.ndarray) and F.ndim == 3:
-            midx, midz = F.shape[0]//2, F.shape[2]//2
-            slices[f"{k}_transverse_mid"] = F[:, :, midz]
-            slices[f"{k}_longitudinal_mid"] = F[midx, :, :]
+
+    for key, F in field_data.items():
+        if not (isinstance(F, np.ndarray) and F.ndim == 3):
+            continue
+
+        midx = F.shape[0] // 2
+        midz = F.shape[2] // 2
+
+        slices[f"{key}_iris_1"] = F[:, :, 0]
+        slices[f"{key}_iris_2"] = F[:, :, -1]
+        slices[f"{key}_transverse_mid"] = F[:, :, midz]
+        slices[f"{key}_longitudinal_mid"] = F[midx, :, :]
+
     return slices
 
 
-def plot_field_slices(field_data: dict, out_dir: str, title: str = ""):
-    """Save field-slice plots for plus, minus and combined plus/minus views.
-
-    Produces the existing separate 4x3 plots:
-      plus_iris_1.png, plus_iris_2.png, plus_transverse_mid.png,
-      plus_longitudinal_mid.png, and the equivalent four minus_*.png files.
-
-    Also produces combined 4x4 plots:
-      iris_1.png, iris_2.png, transverse_mid.png, longitudinal_mid.png
-
-    Combined plot layout:
-      columns = [E1, E2, E+, E-]
-      rows    = [Ex, Ey, Ez, |E|]
-
-    Array convention: field[x, y, z].
-    Plot convention:
-      - iris/transverse: x horizontal, y vertical, using F[:, :, z_index].T
-      - longitudinal: z horizontal, y vertical, using F[x_mid, :, :]
-      - Ex/Ey/Ez rows: RdBu_r, symmetric around zero
-      - |E| row: viridis, 0 to row max
-    """
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    slice_specs = {
-        "iris_1": lambda F: np.asarray(F)[:, :, 0].T,
-        "iris_2": lambda F: np.asarray(F)[:, :, np.asarray(F).shape[2] - 1].T,
-        "transverse_mid": lambda F: np.asarray(F)[:, :, np.asarray(F).shape[2] // 2].T,
-        "longitudinal_mid": lambda F: np.asarray(F)[np.asarray(F).shape[0] // 2, :, :],
-    }
-
-    op_rows = {
-        "plus": [
-            ("E1_Ex", "E2_Ex", "Ex_plus"),
-            ("E1_Ey", "E2_Ey", "Ey_plus"),
-            ("E1_Ez", "E2_Ez", "Ez_plus"),
-            ("abs_E1", "abs_E2", "abs_plus"),
-        ],
-        "minus": [
-            ("E1_Ex", "E2_Ex", "Ex_minus"),
-            ("E1_Ey", "E2_Ey", "Ey_minus"),
-            ("E1_Ez", "E2_Ez", "Ez_minus"),
-            ("abs_E1", "abs_E2", "abs_minus"),
-        ],
-    }
-
-    def _row_limits(row_data, is_abs_row: bool):
-        if is_abs_row:
-            vmax = max(float(np.nanmax(arr)) for arr in row_data)
-            vmin = 0.0
-            cmap = "viridis"
-        else:
-            vmax = max(float(np.nanmax(np.abs(arr))) for arr in row_data)
-            vmin = -vmax
-            cmap = "RdBu_r"
-
-        if not np.isfinite(vmax) or vmax == 0.0:
-            vmax = 1.0
-            if not is_abs_row:
-                vmin = -1.0
-
-        return vmin, vmax, cmap
-
-    def _label_axes(ax, stype):
-        if stype in ("iris_1", "iris_2", "transverse_mid"):
-            ax.set_xlabel("x pixel")
-            ax.set_ylabel("y pixel")
-        else:
-            ax.set_xlabel("z pixel")
-            ax.set_ylabel("y pixel")
-
-    def _annotate_max(ax, arr):
-        ax.text(
-            0.02,
-            0.98,
-            f"max={np.nanmax(np.abs(arr)):.2e}",
-            transform=ax.transAxes,
-            ha="left",
-            va="top",
-            fontsize=8,
-            bbox=dict(facecolor="white", alpha=0.65, edgecolor="none"),
-        )
-
-    # ------------------------------------------------------------------
-    # Existing separate plus/minus 4x3 figures.
-    # ------------------------------------------------------------------
-    for op, rows in op_rows.items():
-        for stype, slicer in slice_specs.items():
-            fig, axes = plt.subplots(4, 3, figsize=(11, 10), constrained_layout=True)
-            fig.suptitle(f"{title} : {op} : {stype}")
-
-            for r, row_keys in enumerate(rows):
-                row_data = [slicer(field_data[k]) for k in row_keys]
-                vmin, vmax, cmap = _row_limits(row_data, is_abs_row=(r == 3))
-
-                for c, (key, arr) in enumerate(zip(row_keys, row_data)):
-                    ax = axes[r, c]
-                    im = ax.imshow(
-                        arr,
-                        origin="lower",
-                        cmap=cmap,
-                        vmin=vmin,
-                        vmax=vmax,
-                        aspect="auto",
-                    )
-                    ax.set_title(key)
-                    _label_axes(ax, stype)
-                    _annotate_max(ax, arr)
-
-                fig.colorbar(im, ax=axes[r, :], fraction=0.02, pad=0.01)
-
-            fig.savefig(out_dir / f"{op}_{stype}.png", dpi=300)
-            plt.close(fig)
-
-    # ------------------------------------------------------------------
-    # New combined 4x4 figures: columns = [E1, E2, E+, E-].
-    # ------------------------------------------------------------------
-    combined_rows = [
-        ("E1_Ex", "E2_Ex", "Ex_plus", "Ex_minus"),
-        ("E1_Ey", "E2_Ey", "Ey_plus", "Ey_minus"),
-        ("E1_Ez", "E2_Ez", "Ez_plus", "Ez_minus"),
-        ("abs_E1", "abs_E2", "abs_plus", "abs_minus"),
-    ]
-    column_titles = [r"$E_1$", r"$E_2$", r"$E_+$", r"$E_-$"]
-    row_titles = [r"$E_x$", r"$E_y$", r"$E_z$", r"$|E|$"]
-
-    for stype, slicer in slice_specs.items():
-        fig, axes = plt.subplots(4, 4, figsize=(14, 10), constrained_layout=True)
-        fig.suptitle(f"{title} : plus/minus comparison : {stype}")
-
-        for r, row_keys in enumerate(combined_rows):
-            row_data = [slicer(field_data[k]) for k in row_keys]
-            vmin, vmax, cmap = _row_limits(row_data, is_abs_row=(r == 3))
-
-            for c, (key, arr) in enumerate(zip(row_keys, row_data)):
-                ax = axes[r, c]
-                im = ax.imshow(
-                    arr,
-                    origin="lower",
-                    cmap=cmap,
-                    vmin=vmin,
-                    vmax=vmax,
-                    aspect="auto",
-                )
-                if r == 0:
-                    ax.set_title(column_titles[c])
-                if c == 0:
-                    ax.set_ylabel(row_titles[r])
-                _label_axes(ax, stype)
-                _annotate_max(ax, arr)
-
-            fig.colorbar(im, ax=axes[r, :], fraction=0.02, pad=0.01)
-
-        fig.savefig(out_dir / f"{stype}.png", dpi=300)
-        plt.close(fig)
 
 
 def accelerating_voltage_complex(Ez_line, z_m, omega, beta=1.0):
@@ -646,3 +509,21 @@ def kick_from_Ez_field(
         "f_mnp_Hz": float(f_mnp),
         "omega_rad_s": omega,
     }
+
+
+def load_field_data_npz(fname: str | Path) -> dict[str, np.ndarray]:
+    """
+    Load a field dictionary previously written by save_field_data_npz().
+
+    Returns
+    -------
+    dict
+        Dictionary containing the same keys as were passed to
+        save_field_data_npz().
+    """
+    fname = Path(fname)
+
+    with np.load(fname, allow_pickle=False) as data:
+        field_data = {key: data[key] for key in data.files}
+
+    return field_data
