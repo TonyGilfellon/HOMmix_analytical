@@ -214,7 +214,7 @@ def plot_theta_r_before_after(before_Eabs, after_Eabs, x, y, out_png, title=""):
     plt.close(fig)
 
 
-def align_field_to_vertical_plane(field: dict, out_plot: str | None = None, label="") -> dict:
+def align_field_to_vertical_plane_old(field: dict, out_plot: str | None = None, label="") -> dict:
     """Rotate a field so at least one global |E| maximum lies in |E|[mid,:,:].
 
     Quadrupole modes often have several equal |E| maxima.  We therefore test
@@ -263,6 +263,220 @@ def align_field_to_vertical_plane(field: dict, out_plot: str | None = None, labe
     })
     return rot
 
+def align_field_to_vertical_plane(
+    field: dict,
+    out_plot: str | None = None,
+    label: str = "",
+    *,
+    fit_pixels: int = 12,
+    z_index: int | None = None,
+    target: str = "principal_axes_xy",
+) -> dict:
+    """
+    Rotate a quadrupole-like field using the principal-axis angle from Ez.
+
+    Drop-in replacement for the old peak-based align_field_to_vertical_plane().
+    It returns the same style of dict as rotate_vector_field_about_z(), plus
+    metadata keys used by the current workflow.
+
+    Parameters
+    ----------
+    field
+        Dict containing Ex, Ey, Ez and optionally x_m, y_m, z_m.
+    out_plot
+        Optional diagnostic theta-r plot path.
+    label
+        Label for diagnostics.
+    fit_pixels
+        Radius in pixels for near-axis Ez quadratic fit.
+    z_index
+        Longitudinal slice used for determining quadrupole angle.
+        If None, uses the slice where near-axis |Ez| is largest.
+    target
+        "principal_axes_xy":
+            rotate so fitted Kxy is minimised; quadrupole axes align with x/y.
+        "diagonal_lobes_vertical":
+            rotate an Ez quadrupole with diagonal lobes onto the visual
+            vertical/horizontal convention commonly expected in iris plots.
+            This is usually the better option for matching your screenshot.
+    """
+    Ex, Ey, Ez = field["Ex"], field["Ey"], field["Ez"]
+
+    x = field.get("x_m", np.linspace(-1.0, 1.0, Ex.shape[0]))
+    y = field.get("y_m", np.linspace(-1.0, 1.0, Ex.shape[1]))
+    z = field.get("z_m", np.linspace(0.0, 1.0, Ex.shape[2]))
+
+    Eabs0 = eabs_from_components(Ex, Ey, Ez)
+    peak0 = tuple(int(v) for v in np.unravel_index(np.nanargmax(Eabs0), Eabs0.shape))
+
+    nx, ny, nz = Ez.shape
+    ix0, iy0 = nx // 2, ny // 2
+
+    if z_index is None:
+        # Choose the z slice with the largest near-axis Ez signal.
+        r = min(int(fit_pixels), ix0 - 1, iy0 - 1)
+        near = Ez[ix0 - r: ix0 + r + 1, iy0 - r: iy0 + r + 1, :]
+        z_index = int(np.nanargmax(np.nanmax(np.abs(near), axis=(0, 1))))
+
+    dx = float(x[1] - x[0]) if len(x) > 1 else 1.0
+    dy = float(y[1] - y[0]) if len(y) > 1 else 1.0
+
+    max_px = min(int(fit_pixels), ix0 - 1, iy0 - 1)
+
+    pts = []
+    vals = []
+
+    for i in range(ix0 - max_px, ix0 + max_px + 1):
+        for j in range(iy0 - max_px, iy0 + max_px + 1):
+            xx = (i - ix0) * dx
+            yy = (j - iy0) * dy
+
+            if np.hypot(xx, yy) <= max_px * min(abs(dx), abs(dy)):
+                pts.append((xx, yy))
+                vals.append(Ez[i, j, z_index])
+
+    pts = np.asarray(pts, dtype=float)
+    vals = np.asarray(vals, dtype=float)
+
+    X = pts[:, 0]
+    Y = pts[:, 1]
+
+    A = np.column_stack([
+        np.ones_like(X),
+        X,
+        Y,
+        X * X,
+        X * Y,
+        Y * Y,
+    ])
+
+    coeff, *_ = np.linalg.lstsq(A, vals, rcond=None)
+    _, _, _, axx, axy, ayy = coeff
+
+    H = np.array([
+        [2.0 * axx, axy],
+        [axy, 2.0 * ayy],
+    ], dtype=float)
+
+    # Principal-axis angle of the fitted quadrupole tensor.
+    theta_rad = 0.5 * np.arctan2(2.0 * H[0, 1], H[0, 0] - H[1, 1])
+    theta_deg = float(np.degrees(theta_rad))
+
+    candidate_angles = []
+
+    if target == "principal_axes_xy":
+        # Put principal axes onto x/y.
+        base = -theta_deg
+        candidate_angles = [base, base + 90.0, base - 90.0, base + 180.0]
+
+    elif target == "diagonal_lobes_vertical":
+        # For an Ez quadrupole pattern, the visible high-field lobes may lie
+        # 45 degrees from the principal axes. Test both 45-degree conventions.
+        base1 = 45.0 - theta_deg
+        base2 = -45.0 - theta_deg
+        candidate_angles = [
+            base1, base1 + 90.0, base1 - 90.0,
+            base2, base2 + 90.0, base2 - 90.0,
+        ]
+
+    else:
+        raise ValueError(
+            "target must be 'principal_axes_xy' or 'diagonal_lobes_vertical'"
+        )
+
+    def wrap_angle_deg(a: float) -> float:
+        return float((a + 180.0) % 360.0 - 180.0)
+
+    candidate_angles = [wrap_angle_deg(a) for a in candidate_angles]
+
+    def fitted_H_after_rotation(angle_deg: float) -> np.ndarray:
+        trial = rotate_vector_field_about_z(Ex, Ey, Ez, x, y, z, angle_deg)
+        Ezr = trial["Ez"]
+
+        vals_r = []
+        for xx, yy in pts:
+            i = int(round(ix0 + xx / dx))
+            j = int(round(iy0 + yy / dy))
+            vals_r.append(Ezr[i, j, z_index])
+
+        vals_r = np.asarray(vals_r, dtype=float)
+        coeff_r, *_ = np.linalg.lstsq(A, vals_r, rcond=None)
+        _, _, _, axx_r, axy_r, ayy_r = coeff_r
+
+        return np.array([
+            [2.0 * axx_r, axy_r],
+            [axy_r, 2.0 * ayy_r],
+        ], dtype=float)
+
+    best = None
+
+    for angle in candidate_angles:
+        trial = rotate_vector_field_about_z(Ex, Ey, Ez, x, y, z, angle)
+        Eabs = trial["Eabs"]
+
+        peak = tuple(int(v) for v in np.unravel_index(np.nanargmax(Eabs), Eabs.shape))
+        global_max = float(np.nanmax(Eabs))
+        midplane_max = float(np.nanmax(Eabs[ix0, :, :]))
+
+        Hr = fitted_H_after_rotation(angle)
+
+        Hxx = Hr[0, 0]
+        Hxy = Hr[0, 1]
+        Hyy = Hr[1, 1]
+
+        diag_scale = max(abs(Hxx), abs(Hyy), 1e-300)
+        cross_ratio = abs(Hxy) / diag_scale
+
+        # Prefer:
+        #   1. small cross term after rotation,
+        #   2. opposite signs of Hxx/Hyy,
+        #   3. strong mid-plane maximum,
+        #   4. global peak close to vertical mid-plane.
+        opposite_sign_penalty = 0.0 if Hxx * Hyy < 0.0 else 1.0
+        midplane_error = abs(global_max - midplane_max) / (global_max if global_max else 1.0)
+        peak_x_error = abs(peak[0] - ix0)
+
+        score = (
+            cross_ratio,
+            opposite_sign_penalty,
+            midplane_error,
+            peak_x_error,
+        )
+
+        if best is None or score < best[0]:
+            best = (score, angle, trial, peak, global_max, midplane_max, Hr)
+
+    score, angle, rot, peak1, global_max, midplane_max, H_after = best
+
+    if out_plot:
+        plot_theta_r_before_after(
+            Eabs0,
+            rot["Eabs"],
+            x,
+            y,
+            out_plot,
+            title=f"{label}: quadrupole-axis angle={angle:.3f} deg",
+        )
+
+    rot.update({
+        "rotation_angle_deg": angle,
+        "rotation_method": "quadrupole_Ez_principal_axis",
+        "rotation_target": target,
+        "quadrupole_angle_before_deg": theta_deg,
+        "quadrupole_fit_z_index": int(z_index),
+        "quadrupole_fit_pixels": int(max_px),
+        "quadrupole_H_before": H,
+        "quadrupole_H_after": H_after,
+        "quadrupole_cross_ratio_after": float(
+            abs(H_after[0, 1]) / max(abs(H_after[0, 0]), abs(H_after[1, 1]), 1e-300)
+        ),
+        "peak_before": peak0,
+        "peak_after": peak1,
+        "global_max_after": global_max,
+        "vertical_midplane_max_after": midplane_max,
+    })
+
+    return rot
 
 def combine_fields(E1: dict, E2: dict) -> dict:
     out = {}

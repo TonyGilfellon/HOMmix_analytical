@@ -29,6 +29,7 @@ from typing import Iterable
 
 import numpy as np
 import matplotlib.pyplot as plt
+import pandas as pd
 from scipy import special
 from scipy.interpolate import RegularGridInterpolator
 from scipy.optimize import brentq
@@ -303,10 +304,20 @@ def save_field_data_npz(field_data: dict, filename: str):
 
 
 def extract_slices(field_data: dict) -> dict:
+    """Extract the four 2D slices used by the compact summary PDFs.
+
+    Generated keys include, for every 3D field F in field_data:
+        *_iris_1             F[:, :, 0]
+        *_iris_2             F[:, :, -1]
+        *_transverse_mid     F[:, :, mid_z]
+        *_longitudinal_mid   F[mid_x, :, :]
+    """
     slices = {}
     for k, F in field_data.items():
         if isinstance(F, np.ndarray) and F.ndim == 3:
-            midx, midz = F.shape[0]//2, F.shape[2]//2
+            midx, midz = F.shape[0] // 2, F.shape[2] // 2
+            slices[f"{k}_iris_1"] = F[:, :, 0]
+            slices[f"{k}_iris_2"] = F[:, :, -1]
             slices[f"{k}_transverse_mid"] = F[:, :, midz]
             slices[f"{k}_longitudinal_mid"] = F[midx, :, :]
     return slices
@@ -603,10 +614,187 @@ def plot_combined_field_slices_4x4(
         fig.savefig(out_dir / f"{stype}.png", dpi=300)
         plt.close(fig)
 
+
+def _save_one_2x4_slice_on_gridspec(
+    fig: plt.Figure,
+    grid_slot,
+    slice_dict: dict[str, np.ndarray],
+    stype: str,
+    block_title: str,
+) -> None:
+    """Draw one 2x4 [Ez, |E|] x [E1, E2, E-, E+] slice block."""
+    rows = [
+        ("E1_Ez", "E2_Ez", "Ez_minus", "Ez_plus"),
+        ("abs_E1", "abs_E2", "abs_minus", "abs_plus"),
+    ]
+    column_titles = [r"$E_1$", r"$E_2$", r"$E_-$", r"$E_+$"]
+    row_titles = [
+        r"$E_z/E_{z,\mathrm{ref}}$",
+        r"$|E|/|E|_{\mathrm{ref}}$",
+    ]
+
+    def _real_image(arr):
+        return np.real(np.asarray(arr))
+
+    def _plot_orient(arr, slice_type):
+        return arr.T if slice_type.startswith("iris") or slice_type == "transverse_mid" else arr
+
+    def _safe_ref(arrays):
+        ref = max(float(np.nanmax(np.abs(a))) for a in arrays)
+        return ref if np.isfinite(ref) and ref > 0.0 else 1.0
+
+    def _safe_vmax(arrays, ref):
+        scaled_max = max(float(np.nanmax(np.abs(a / ref))) for a in arrays)
+        return max(1.0, scaled_max) if np.isfinite(scaled_max) and scaled_max > 0.0 else 1.0
+
+    gs = grid_slot.subgridspec(
+        2,
+        5,
+        width_ratios=[1, 1, 1, 1, 0.045],
+        height_ratios=[1, 1],
+        wspace=0.0,
+        hspace=0.04,
+    )
+
+    parent_ez_ref = _safe_ref([
+        _real_image(slice_dict[f"E1_Ez_{stype}"]),
+        _real_image(slice_dict[f"E2_Ez_{stype}"]),
+    ])
+    parent_abs_ref = _safe_ref([
+        _real_image(slice_dict[f"abs_E1_{stype}"]),
+        _real_image(slice_dict[f"abs_E2_{stype}"]),
+    ])
+
+    first_ax = None
+
+    for r, row_keys in enumerate(rows):
+        raw_row_data = [_real_image(slice_dict[f"{k}_{stype}"]) for k in row_keys]
+
+        if r == 0:
+            ref = parent_ez_ref
+            row_data = [arr / ref for arr in raw_row_data]
+            vmax = _safe_vmax(raw_row_data, ref)
+            vmin = -vmax
+            cmap = "RdBu_r"
+        else:
+            ref = parent_abs_ref
+            row_data = [arr / ref for arr in raw_row_data]
+            vmin = 0.0
+            vmax = _safe_vmax(raw_row_data, ref)
+            cmap = "viridis"
+
+        im = None
+
+        for c, (arr_raw, arr_scaled) in enumerate(zip(raw_row_data, row_data)):
+            ax = fig.add_subplot(gs[r, c])
+            if first_ax is None:
+                first_ax = ax
+
+            ax.set_anchor("C")
+            plot_arr = _plot_orient(arr_scaled, stype)
+
+            im = ax.imshow(
+                plot_arr,
+                origin="lower",
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                aspect="equal",
+            )
+            ny, nx = plot_arr.shape
+            ax.set_box_aspect(ny / nx)
+            ax.margins(0)
+            ax.set_xticks([])
+            ax.set_yticks([])
+
+            if r == 0:
+                ax.set_title(column_titles[c], fontsize=10, fontweight="bold", pad=2)
+            if c == 0:
+                ax.set_ylabel(row_titles[r], fontsize=9, rotation=90, labelpad=7)
+
+            ax.text(
+                0.04,
+                0.96,
+                f"{np.nanmax(np.abs(arr_scaled)):.2f}",
+                transform=ax.transAxes,
+                ha="left",
+                va="top",
+                fontsize=8,
+                bbox=dict(facecolor="white", edgecolor="none", alpha=0.75, pad=1.2),
+            )
+
+        cax = fig.add_subplot(gs[r, 4])
+        cb = fig.colorbar(im, cax=cax)
+        cb.ax.tick_params(labelsize=7, length=2, pad=1)
+
+    if first_ax is not None:
+        first_ax.text(
+            0.0,
+            1.04,
+            block_title,
+            transform=first_ax.transAxes,
+            ha="left",
+            va="bottom",
+            fontsize=11,
+            fontweight="bold",
+            clip_on=False,
+            bbox=dict(facecolor="white", edgecolor="none", alpha=0.90, pad=0.2),
+        )
+
+
+def save_four_slice_pdfs_and_merge(
+    slice_dict: dict[str, np.ndarray],
+    out_dir: str | Path,
+    merged_pdf_name: str = "combined_four_slice_summary.pdf",
+) -> Path:
+    """Save one tall single-page PDF containing all four 2x4 slice summaries.
+
+    The name is retained for compatibility with the homotypic scripts, but this
+    implementation no longer creates four separate pages and then merges them.
+    It writes a single tall PDF directly, suitable for one \includegraphics call
+    in the PRAB appendix.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    specs = [
+        ("iris_1", "Transverse iris 1"),
+        ("iris_2", "Transverse iris 2"),
+        ("longitudinal_mid", "Longitudinal vertical mid-plane"),
+        ("transverse_mid", "Transverse mid-plane"),
+    ]
+
+    fig = plt.figure(figsize=(7.2, 12.0), constrained_layout=False)
+    outer = fig.add_gridspec(
+        4,
+        1,
+        left=0.075,
+        right=0.965,
+        bottom=0.025,
+        top=0.975,
+        hspace=0.20,
+    )
+
+    for block_idx, (stype, block_title) in enumerate(specs):
+        _save_one_2x4_slice_on_gridspec(
+            fig=fig,
+            grid_slot=outer[block_idx, 0],
+            slice_dict=slice_dict,
+            stype=stype,
+            block_title=block_title,
+        )
+
+    out_file = out_dir / merged_pdf_name
+    fig.savefig(out_file, format="pdf", bbox_inches="tight", pad_inches=0.02)
+    plt.close(fig)
+
+    print(f"Wrote single-page summary PDF {out_file}")
+    return out_file
+
 def accelerating_voltage_complex(Ez_line, z_m, omega, beta=1.0):
     zc = np.asarray(z_m, float) - 0.5*(z_m[0] + z_m[-1])
     Ez_line = np.asarray(Ez_line, float)
-    return np.trapz(Ez_line * np.exp(1j*omega*zc/(beta*C0)), zc)
+    return np.trapezoid(Ez_line * np.exp(1j*omega*zc/(beta*C0)), zc)
 
 
 def kick_from_Ez_field(Ez, f_010, f_mnp, l_factor, Req_m, *, axis="y", fit_pixels=8, beta=1.0):
@@ -792,6 +980,279 @@ def plot_quadrupole_voltage_fit(focus_result: dict, out_png: str, title: str = "
     Path(out_png).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_png, dpi=220)
     plt.close(fig)
+
+
+# -----------------------------------------------------------------------------
+# Heterotypic Method 2 scalar metric analysis
+# -----------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class MetricParams:
+    """Parameters for local quadratic Method 2 metric extraction.
+
+    The transverse grid is interpreted with the beam/cylinder axis at
+    array[axis_i, axis_j, :] and the physical cylinder radius at radius_pixels
+    pixels from that axis.  For the default 151 x 151 maps this gives
+    axis_i = axis_j = 75 and radius_pixels = 75.
+    """
+    frequency_Hz: float
+    length_m: float
+    Req_m: float
+    beta: float = 1.0
+    axis_i: float = 75.0
+    axis_j: float = 75.0
+    radius_pixels: float = 75.0
+    local_fit_pixels: int = 3
+    U_J: float | None = None
+
+    @property
+    def omega(self) -> float:
+        return 2.0 * np.pi * float(self.frequency_Hz)
+
+    @property
+    def dx_m(self) -> float:
+        return float(self.Req_m) / float(self.radius_pixels)
+
+    @property
+    def dy_m(self) -> float:
+        return self.dx_m
+
+
+def _metric_xy_arrays(shape: tuple[int, int, int], params: MetricParams) -> tuple[np.ndarray, np.ndarray]:
+    nx, ny, _ = shape
+    x = (np.arange(nx, dtype=float) - float(params.axis_i)) * params.dx_m
+    y = (np.arange(ny, dtype=float) - float(params.axis_j)) * params.dy_m
+    return x, y
+
+
+def stored_energy_from_E_components(Ex: np.ndarray, Ey: np.ndarray, Ez: np.ndarray, params: MetricParams) -> float:
+    """Electric stored-energy proxy calculated separately for each field.
+
+    For the analytical maps in this script only E is available, not H.  This
+    therefore uses the electric-energy integral over the cylindrical aperture,
+
+        U_E = (eps0/2) integral |E|^2 dV.
+
+    It is still useful for consistent per-field normalisation of E1, E2, E+ and
+    E-.  Replace this helper with a full electromagnetic-energy integral if H
+    maps are later available.
+    """
+    Ex = np.nan_to_num(np.asarray(Ex, float), nan=0.0)
+    Ey = np.nan_to_num(np.asarray(Ey, float), nan=0.0)
+    Ez = np.nan_to_num(np.asarray(Ez, float), nan=0.0)
+    nx, ny, nz = Ez.shape
+    x, y = _metric_xy_arrays(Ez.shape, params)
+    X, Y = np.meshgrid(x, y, indexing="ij")
+    mask_xy = (X * X + Y * Y) <= params.Req_m * params.Req_m
+    dz = params.length_m / (nz - 1)
+    dV = params.dx_m * params.dy_m * dz
+    E2 = Ex * Ex + Ey * Ey + Ez * Ez
+    U = 0.5 * EPS0 * float(np.sum(E2 * mask_xy[:, :, None])) * dV
+    if not np.isfinite(U) or U <= 0.0:
+        raise ValueError(f"Calculated non-positive stored energy U={U!r}.")
+    return U
+
+
+def accelerating_voltage_map_from_Ez(Ez: np.ndarray, params: MetricParams) -> np.ndarray:
+    """Return complex transit-time voltage map Vz(x,y) from Ez[x,y,z]."""
+    Ez = np.nan_to_num(np.asarray(Ez, float), nan=0.0)
+    nz = Ez.shape[2]
+    z = np.linspace(-0.5 * params.length_m, 0.5 * params.length_m, nz)
+    phase = np.exp(1j * params.omega * z / (float(params.beta) * C0))
+    return np.trapezoid(Ez * phase[None, None, :], z, axis=2)
+
+
+def _local_quadratic_derivatives(Vz_map: np.ndarray, params: MetricParams) -> dict:
+    """Local Method 2 derivative extraction from a small quadratic LS stencil."""
+    Vz_map = np.asarray(Vz_map, complex)
+    nx, ny = Vz_map.shape
+    r = int(params.local_fit_pixels)
+    if r < 1:
+        raise ValueError("local_fit_pixels must be >= 1")
+
+    i0 = int(round(params.axis_i))
+    j0 = int(round(params.axis_j))
+    if i0 - r < 0 or i0 + r >= nx or j0 - r < 0 or j0 + r >= ny:
+        raise ValueError(
+            f"Local fit radius {r} around axis ({params.axis_i},{params.axis_j}) "
+            f"does not fit inside Vz_map shape {Vz_map.shape}."
+        )
+
+    aperture = r * min(params.dx_m, params.dy_m)
+    pts = []
+    vals = []
+    for di in range(-r, r + 1):
+        for dj in range(-r, r + 1):
+            x = di * params.dx_m
+            y = dj * params.dy_m
+            if np.hypot(x, y) <= aperture:
+                pts.append((x, y))
+                vals.append(Vz_map[i0 + di, j0 + dj])
+
+    pts = np.asarray(pts, float)
+    Vc = np.asarray(vals, complex)
+    if len(Vc) < 6:
+        raise ValueError(f"Need at least 6 local points for quadratic fit; got {len(Vc)}")
+
+    x = pts[:, 0]
+    y = pts[:, 1]
+    A = np.column_stack([np.ones_like(x), x, y, x * x, x * y, y * y])
+    cr, *_ = np.linalg.lstsq(A, Vc.real, rcond=None)
+    ci, *_ = np.linalg.lstsq(A, Vc.imag, rcond=None)
+    coeff = cr + 1j * ci
+    a0, ax, ay, axx, axy, ayy = coeff
+    grad = np.array([ax, ay], dtype=complex)
+    H = np.array([[2.0 * axx, axy], [axy, 2.0 * ayy]], dtype=complex)
+    return {
+        "V0": a0,
+        "grad_V_per_m": grad,
+        "hessian_V_per_m2": H,
+        "coefficients": {
+            "a0": a0, "ax": ax, "ay": ay, "axx": axx, "axy": axy, "ayy": ayy,
+        },
+        "local_fit_points": int(len(Vc)),
+        "local_fit_pixels": r,
+    }
+
+
+def _phase_align_complex_vector(v: np.ndarray) -> tuple[np.ndarray, float]:
+    v = np.asarray(v, complex)
+    idx = int(np.nanargmax(np.abs(v)))
+    ref = v[idx]
+    phase = float(np.angle(ref)) if abs(ref) > 0 else 0.0
+    return v * np.exp(-1j * phase), phase
+
+
+def method2_local_quadratic_metrics_from_components(
+    Ex: np.ndarray,
+    Ey: np.ndarray,
+    Ez: np.ndarray,
+    params: MetricParams,
+) -> dict:
+    """Apply benchmarked Method 2 to one field's components."""
+    U = stored_energy_from_E_components(Ex, Ey, Ez, params)
+    params = MetricParams(
+        frequency_Hz=params.frequency_Hz,
+        length_m=params.length_m,
+        Req_m=params.Req_m,
+        beta=params.beta,
+        axis_i=params.axis_i,
+        axis_j=params.axis_j,
+        radius_pixels=params.radius_pixels,
+        local_fit_pixels=params.local_fit_pixels,
+        U_J=U,
+    )
+    Vz_map = accelerating_voltage_map_from_Ez(Ez, params)
+    deriv = _local_quadratic_derivatives(Vz_map, params)
+
+    V0 = deriv["V0"]
+    grad = deriv["grad_V_per_m"]
+    H = deriv["hessian_V_per_m2"]
+
+    k_parallel = abs(V0) ** 2 / (4.0 * U)
+    grad_norm = float(np.sqrt(abs(grad[0]) ** 2 + abs(grad[1]) ** 2))
+    Vperp_per_m = (C0 / params.omega) * grad_norm
+    k_perp = abs(Vperp_per_m) ** 2 / (4.0 * U)
+
+    K_complex_raw = (C0 / params.omega) * H
+    K_complex_U_norm = K_complex_raw / np.sqrt(4.0 * U)
+    K_phase, phase_K = _phase_align_complex_matrix(K_complex_U_norm)
+    K_real = K_phase.real
+    evals, evecs = np.linalg.eigh(K_real)
+
+    lin_phase, phase_lin = _phase_align_complex_vector((C0 / params.omega) * grad / np.sqrt(4.0 * U))
+
+    Kxx = float(K_real[0, 0])
+    Kxy = float(K_real[0, 1])
+    Kyy = float(K_real[1, 1])
+    K_quad_strength = float(np.sqrt((Kxx - Kyy) ** 2 + 4.0 * Kxy ** 2))
+    K_fro = float(np.linalg.norm(K_real, ord="fro"))
+
+    return {
+        "method": "2_local_quadratic_least_squares",
+        "frequency_Hz": float(params.frequency_Hz),
+        "length_m": float(params.length_m),
+        "U_J_electric_proxy": float(U),
+        "k_parallel_V_per_C": float(k_parallel),
+        "k_parallel_V_per_pC": float(k_parallel * 1e-12),
+        "k_perp_V_per_C_per_m2": float(k_perp),
+        "k_perp_V_per_pC_per_m2": float(k_perp * 1e-12),
+        "Kxx_U_norm": Kxx,
+        "Kxy_U_norm": Kxy,
+        "Kyy_U_norm": Kyy,
+        "trace_U_norm": float(np.trace(K_real)),
+        "determinant_U_norm": float(np.linalg.det(K_real)),
+        "K_eig_min_U_norm": float(evals[0]),
+        "K_eig_max_U_norm": float(evals[1]),
+        "K_quad_strength_U_norm": K_quad_strength,
+        "K_frobenius_U_norm": K_fro,
+        "phase_K_rad": float(phase_K),
+        "phase_linear_rad": float(phase_lin),
+        "local_fit_pixels": int(deriv["local_fit_pixels"]),
+        "local_fit_points": int(deriv["local_fit_points"]),
+        "transverse_pixel_m": params.dx_m,
+        "longitudinal_pixel_m": params.length_m / (np.asarray(Ez).shape[2] - 1),
+        "axis_i": float(params.axis_i),
+        "axis_j": float(params.axis_j),
+        "radius_pixels": float(params.radius_pixels),
+    }
+
+
+def heterotypic_method2_metrics_table(
+    field_data: dict,
+    *,
+    f_E1: float,
+    f_E2: float,
+    f_degen: float,
+    f_010: float,
+    ell: float,
+    Req_m: float,
+    beta: float = 1.0,
+    axis_i: float = 75.0,
+    axis_j: float = 75.0,
+    radius_pixels: float = 75.0,
+    local_fit_pixels: int = 3,
+) -> pd.DataFrame:
+    """Calculate Method 2 metrics for E1, E2, E+ and E- in heterotypic mixing."""
+    d0 = (C0 / float(f_010)) / 2.0
+    d = d0 * float(ell)
+    specs = {
+        "E1": ("E1_Ex", "E1_Ey", "E1_Ez", f_E1, d0),
+        "E2": ("E2_Ex", "E2_Ey", "E2_Ez", f_E2, d0),
+        "plus": ("Ex_plus", "Ey_plus", "Ez_plus", f_degen, d),
+        "minus": ("Ex_minus", "Ey_minus", "Ez_minus", f_degen, d),
+    }
+
+    # Frequency/length convention:
+    #   E1, E2      : native/design frequencies at the design length d0.
+    #   E+, E-      : degenerate crossing frequency at d=d0*ell.
+    rows = []
+    for name, (kx, ky, kz, freq, length_m) in specs.items():
+        p = MetricParams(
+            frequency_Hz=float(freq),
+            length_m=float(length_m),
+            Req_m=float(Req_m),
+            beta=float(beta),
+            axis_i=float(axis_i),
+            axis_j=float(axis_j),
+            radius_pixels=float(radius_pixels),
+            local_fit_pixels=int(local_fit_pixels),
+        )
+        m = method2_local_quadratic_metrics_from_components(
+            field_data[kx], field_data[ky], field_data[kz], p
+        )
+        m.update({"field": name})
+        rows.append(m)
+
+    ordered = [
+        "field", "method", "frequency_Hz", "length_m", "U_J_electric_proxy",
+        "k_parallel_V_per_pC", "k_perp_V_per_pC_per_m2",
+        "Kxx_U_norm", "Kxy_U_norm", "Kyy_U_norm",
+        "K_eig_min_U_norm", "K_eig_max_U_norm", "K_quad_strength_U_norm",
+        "local_fit_pixels", "local_fit_points", "transverse_pixel_m", "longitudinal_pixel_m",
+    ]
+    df = pd.DataFrame(rows)
+    return df[[c for c in ordered if c in df.columns] + [c for c in df.columns if c not in ordered]]
 
 # Configuration
 # -----------------------------------------------------------------------------
@@ -1126,7 +1587,21 @@ def get_or_create_heterotypic_field_data(
     analysis_file = out_dir / "heterotypic_crossing_analysis.pkl"
 
     if (not create_fields) and field_file.exists() and analysis_file.exists():
-        return pickle_load(analysis_file)
+        analysis = pickle_load(analysis_file)
+        summary_pdf = out_dir / "slice_summary_pdfs" / f"{out_dir.name}_field_summary.pdf"
+        if not summary_pdf.exists():
+            field_data = load_npz_dict(field_file)
+            slice_dict = extract_slices(field_data)
+            pickle_save(slice_dict, out_dir / "slice_dict.pkl")
+            summary_pdf = save_four_slice_pdfs_and_merge(
+                slice_dict=slice_dict,
+                out_dir=out_dir / "slice_summary_pdfs",
+                merged_pdf_name=f"{out_dir.name}_field_summary.pdf",
+            )
+        analysis.setdefault("files", {})["slice_summary_dir"] = str(out_dir / "slice_summary_pdfs")
+        analysis.setdefault("files", {})["merged_slice_pdf"] = str(summary_pdf)
+        pickle_save(analysis, analysis_file)
+        return analysis
 
     m_i, mnp_i = parse_mode_name(crossing["mode_i"])
     m_j, mnp_j = parse_mode_name(crossing["mode_j"])
@@ -1139,7 +1614,15 @@ def get_or_create_heterotypic_field_data(
 
     field_data = combine_fields(E1, E2)
     save_npz_dict(field_file, field_data)
-    pickle_save(extract_slices(field_data), out_dir / "slice_dict.pkl")
+
+    slice_dict = extract_slices(field_data)
+    pickle_save(slice_dict, out_dir / "slice_dict.pkl")
+
+    summary_pdf = save_four_slice_pdfs_and_merge(
+        slice_dict=slice_dict,
+        out_dir=out_dir / "slice_summary_pdfs",
+        merged_pdf_name=f"{out_dir.name}_field_summary.pdf",
+    )
 
     plots_dir = out_dir / "plots"
     plot_field_slices(
@@ -1153,6 +1636,37 @@ def get_or_create_heterotypic_field_data(
         title=f"{crossing['mode_i']} / {crossing['mode_j']}",
     )
 
+    # Apply the benchmarked Method 2 local quadratic least-squares metric
+    # extraction to all four fields.  For heterotypic crossings these scalar
+    # metrics should be interpreted as local multipole components of the mixed
+    # field, not as evidence that the mixed field is a pure monopole, dipole or
+    # quadrupole.
+    f_E1 = float(family_data[m_i]["TM"][mnp_i]["design_frequency_Hz"])
+    f_E2 = float(family_data[m_j]["TM"][mnp_j]["design_frequency_Hz"])
+    f_degen = float(crossing["frequency_Hz"])
+    ell = float(crossing["length_factor"])
+    f_010 = float(family_data[m_i]["metadata"]["frequency_010_Hz"])
+    Req_m = float(family_data[m_i]["metadata"]["R_m"])
+
+    method2_df = heterotypic_method2_metrics_table(
+        field_data,
+        f_E1=f_E1,
+        f_E2=f_E2,
+        f_degen=f_degen,
+        f_010=f_010,
+        ell=ell,
+        Req_m=Req_m,
+        beta=1.0,
+        axis_i=field_data["E1_Ez"].shape[0] // 2,
+        axis_j=field_data["E1_Ez"].shape[1] // 2,
+        radius_pixels=(field_data["E1_Ez"].shape[0] - 1) / 2.0,
+        local_fit_pixels=3,
+    )
+    metrics_csv = out_dir / "heterotypic_method2_local_quadratic_metrics.csv"
+    metrics_pkl = out_dir / "heterotypic_method2_local_quadratic_metrics.pkl"
+    method2_df.to_csv(metrics_csv, index=False)
+    pickle_save(method2_df, metrics_pkl)
+
     analysis = {
         "crossing_key": crossing_key,
         "crossing": crossing,
@@ -1164,14 +1678,28 @@ def get_or_create_heterotypic_field_data(
         "mnp_j": mnp_j,
         "rotation_i": rotation_label(rot_i),
         "rotation_j": rotation_label(rot_j),
+        "method2_frequency_rules": {
+            "E1_frequency_Hz": f_E1,
+            "E2_frequency_Hz": f_E2,
+            "plus_minus_frequency_Hz": f_degen,
+            "length_factor_ell": ell,
+            "design_length_m": (C0 / f_010) / 2.0,
+            "crossing_length_m": ((C0 / f_010) / 2.0) * ell,
+        },
         "files": {
             "field_data_npz": str(field_file),
             "slice_dict_pkl": str(out_dir / "slice_dict.pkl"),
             "plots_dir": str(out_dir / "plots"),
+            "slice_summary_dir": str(out_dir / "slice_summary_pdfs"),
+            "merged_slice_pdf": str(summary_pdf),
+            "method2_metrics_csv": str(metrics_csv),
+            "method2_metrics_pkl": str(metrics_pkl),
         },
         "note": (
-            "Heterotypic field mixing only.  No scalar loss/kick/focusing figure "
-            "is assigned here because the mixed field is not a pure multipole."
+            "Method 2 local quadratic least-squares metrics have been calculated "
+            "for E1, E2, E+ and E-. For heterotypic crossings these are local "
+            "multipole components of a mixed field, not a classification of the "
+            "mixed field as a pure monopole, dipole or quadrupole."
         ),
     }
     pickle_save(analysis, analysis_file)
@@ -1244,8 +1772,7 @@ def main() -> None:
         create_fields=config.create_fields,
     )
 
-    print("\nDone.  Heterotypic crossing fields and plots have been saved.")
-    print("This script intentionally stops before calculating loss/kick/focusing metrics.")
+    print("\nDone.  Heterotypic crossing fields, plots and Method 2 local metrics have been saved.")
 
 
 if __name__ == "__main__":

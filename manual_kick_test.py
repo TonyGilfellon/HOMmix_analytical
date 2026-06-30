@@ -1,6 +1,6 @@
 from pathlib import Path
 import numpy as np
-
+import pickle as pkl
 
 def load_Ez_fields(field_data_fname):
     """
@@ -70,8 +70,21 @@ def load_Ez_fields(field_data_fname):
         "minus": Ez_minus,
     }
 
+def pickle_save(data_dict, dir_fname):
+    with open(dir_fname, "wb") as handle:
+        pkl.dump(data_dict, handle, protocol=pkl.HIGHEST_PROTOCOL)
+
+def pickle_load(dir_fname):
+    with open(dir_fname, "rb") as handle:
+        data_dict = pkl.load(handle)
+
+    return data_dict
+
 if __name__ == "__main__":
-    directory = r"D:\PhD\HOMmix\HOMmix_analytical\analysis\homotypic_dipoles\TM112_TM120"
+    # directory = r"D:\PhD\HOMmix\HOMmix_analytical\analysis\homotypic_dipoles\TM112_TM120"
+    directory = r"D:\PhD\HOMmix\HOMmix_analytical\analysis\homotypic_quadrupoles\TM220_TM213"
+    # directory = r"D:\PhD\HOMmix\HOMmix_analytical\analysis\homotypic_monopoles\TM013_TM031"
+    # directory = r"C:\HOMmix_analytical\data"
     field_data_fname = f"{directory}\\field_data.npz"
 
     fields = load_Ez_fields(
@@ -83,5 +96,8 @@ if __name__ == "__main__":
     Ez_plus = fields["plus"]
     Ez_minus = fields["minus"]
 
+    pickle_save(fields, f"{directory}\\Ez_fields_E1_E2_Epl_Emin.pkl")
+
+    print(type(fields))
     print(Ez_E1.shape)
     print(Ez_plus.shape)

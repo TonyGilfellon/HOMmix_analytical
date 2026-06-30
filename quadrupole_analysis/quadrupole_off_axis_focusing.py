@@ -714,7 +714,7 @@ def main():
     n_max, p_max = 3, 3
     voxel_res = 151
     f_010 = 1.3e9
-    create_data = False
+    create_data = True
     create_fields = True
     fit_pixels = 8
 
