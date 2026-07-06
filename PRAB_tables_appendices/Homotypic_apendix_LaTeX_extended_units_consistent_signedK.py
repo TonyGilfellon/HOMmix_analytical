@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import pickle as pkl
 from pathlib import Path
 from typing import Any, Iterable
@@ -25,10 +26,44 @@ def pickle_load(dir_fname: str | Path) -> Any:
 # LaTeX formatting helpers
 # -----------------------------------------------------------------------------
 
-def latex_num(x: float | None, precision: int = 4) -> str:
-    if x is None:
+def finite_or_nan(x: object) -> float:
+    try:
+        y = float(x)
+    except Exception:
+        return float("nan")
+    return y if math.isfinite(y) else float("nan")
+
+
+def latex_num(x: float | None, sig: int = 3) -> str:
+    """
+    Return a LaTeX number for table cells, matching the heterotypic appendix
+    style: $a\\times10^{b}$ for nonzero values, 0 for zero, -- for NaN.
+    """
+    x = finite_or_nan(x)
+    if not math.isfinite(x):
         return "--"
-    return f"{float(x):.{precision}g}"
+    if x == 0.0:
+        return "0"
+
+    s = f"{x:.{sig - 1}e}"
+    mantissa, exponent = s.split("e")
+    return rf"${mantissa}\times10^{{{int(exponent)}}}$"
+
+
+def latex_ratio(x: object, ndp: int = 3) -> str:
+    x = finite_or_nan(x)
+    if not math.isfinite(x):
+        return "--"
+    return f"{x:.{ndp}f}"
+
+
+def per_C_to_per_pC(x: object) -> float:
+    """
+    Convert values normalised per coulomb to values normalised per pC.
+
+    1 C = 10^12 pC, so V/C/... -> V/pC/... by dividing by 10^12.
+    """
+    return finite_or_nan(x) / 1.0e12
 
 
 def latex_mode(mode: str) -> str:
@@ -85,6 +120,8 @@ def appendix_i_start() -> str:
 
 \lipsum[1-2]
 
+The tables report beam-dynamics metrics derived from the field distributions: longitudinal loss factor $k_{\parallel}$, dipole kick factor $k_{\perp}$, signed isotropic curvature $K_{\mathrm{iso}}$, scalar quadrupole strength $K_Q$, and signed quadrupole focusing terms $K_{xx}$, $K_{yy}$ and $K_{xy}$.
+
 \clearpage
 """.strip()
 
@@ -130,6 +167,66 @@ def _crossing_metadata(item: dict) -> tuple[dict, str, str]:
     return crossing, mode_i, mode_j
 
 
+def first_finite_from_dicts(dicts: Iterable[dict], keys: Iterable[str]) -> float:
+    for d in dicts:
+        if not isinstance(d, dict):
+            continue
+        for key in keys:
+            if key in d:
+                val = finite_or_nan(d[key])
+                if math.isfinite(val) and val > 0.0:
+                    return val
+    return float("nan")
+
+
+def crossing_length_m(item: dict, crossing: dict) -> float:
+    """
+    Best-effort physical length used to convert V/pC loss to V/pC/m.
+
+    If no length is present in older homotypic outputs, the loss is left
+    unchanged rather than an arbitrary length being invented.
+    """
+    analysis = item.get("analysis", {})
+    fields = item.get("fields", {})
+
+    candidates = [
+        item,
+        crossing,
+        analysis.get("E1", {}) if isinstance(analysis, dict) else {},
+        fields.get("E1", {}) if isinstance(fields, dict) else {},
+    ]
+
+    return first_finite_from_dicts(
+        candidates,
+        (
+            "length_m",
+            "L_m",
+            "cavity_length_m",
+            "physical_length_m",
+            "analysis_length_m",
+        ),
+    )
+
+
+def loss_to_v_per_pc_per_m(loss_value: object, item: dict, crossing: dict) -> float:
+    """
+    Convert a stored monopole loss to V/pC/m when possible.
+
+    Newer pipelines store V/pC and a physical length separately; in that case
+    divide by length. If no length is available, preserve the stored value.
+    """
+    loss = finite_or_nan(loss_value)
+    if not math.isfinite(loss):
+        return float("nan")
+
+    length_m = crossing_length_m(item, crossing)
+    if math.isfinite(length_m) and length_m > 0.0:
+        return abs(loss) / length_m
+
+    return abs(loss)
+
+
+
 def load_monopole_rows(mono_path: str | Path) -> dict[str, dict]:
     """
     Load homotypic monopole crossing entries from all_crossing_analyses.pkl.
@@ -142,10 +239,10 @@ def load_monopole_rows(mono_path: str | Path) -> dict[str, dict]:
         crossing, mode_i, mode_j = _crossing_metadata(item)
         analysis = item["analysis"]
 
-        loss_E1 = float(analysis["E1"]["loss"])
-        loss_E2 = float(analysis["E2"]["loss"])
-        loss_Eplus = float(analysis["plus"]["loss"])
-        loss_Eminus = float(analysis["minus"]["loss"])
+        loss_E1 = loss_to_v_per_pc_per_m(analysis["E1"]["loss"], item, crossing)
+        loss_E2 = loss_to_v_per_pc_per_m(analysis["E2"]["loss"], item, crossing)
+        loss_Eplus = loss_to_v_per_pc_per_m(analysis["plus"]["loss"], item, crossing)
+        loss_Eminus = loss_to_v_per_pc_per_m(analysis["minus"]["loss"], item, crossing)
 
         row_key = f"{mode_i}-{mode_j}"
 
@@ -159,8 +256,9 @@ def load_monopole_rows(mono_path: str | Path) -> dict[str, dict]:
             "frequency_normalised": float(crossing["frequency_Hz"])/1.3e9,
             "metrics": [
                 {
+                    "metric": r"$k_{\parallel}$",
                     "effect": r"$k_{\parallel}$",
-                    "units": r"V\,pC$^{-1}$\,m$^{-1}$",
+                    "units": r"$\mathrm{V/pC/m}$",
                     "E1": loss_E1,
                     "E2": loss_E2,
                     "Eplus": loss_Eplus,
@@ -192,10 +290,10 @@ def load_dipole_rows(di_path: str | Path) -> dict[str, dict]:
         crossing, mode_i, mode_j = _crossing_metadata(item)
         kicks = item["kicks"]
 
-        k_E1 = float(kicks["E1"]["kick_V_per_C_per_m_per_m"])
-        k_E2 = float(kicks["E2"]["kick_V_per_C_per_m_per_m"])
-        k_Eplus = float(kicks["plus"]["kick_V_per_C_per_m_per_m"])
-        k_Eminus = float(kicks["minus"]["kick_V_per_C_per_m_per_m"])
+        k_E1 = per_C_to_per_pC(kicks["E1"]["kick_V_per_C_per_m_per_m"])
+        k_E2 = per_C_to_per_pC(kicks["E2"]["kick_V_per_C_per_m_per_m"])
+        k_Eplus = per_C_to_per_pC(kicks["plus"]["kick_V_per_C_per_m_per_m"])
+        k_Eminus = per_C_to_per_pC(kicks["minus"]["kick_V_per_C_per_m_per_m"])
 
         row_key = f"{mode_i}-{mode_j}"
 
@@ -209,8 +307,9 @@ def load_dipole_rows(di_path: str | Path) -> dict[str, dict]:
             "frequency_normalised": float(crossing["frequency_Hz"])/1.3e9,
             "metrics": [
                 {
+                    "metric": r"$k_{\perp}$",
                     "effect": r"$k_{\perp}$",
-                    "units": r"V\,C$^{-1}$\,m$^{-2}$",
+                    "units": r"$\mathrm{V/pC/m^2}$",
                     "E1": k_E1,
                     "E2": k_E2,
                     "Eplus": k_Eplus,
@@ -223,24 +322,55 @@ def load_dipole_rows(di_path: str | Path) -> dict[str, dict]:
     return rows
 
 
-def _focus_value(result: dict, key: str) -> float:
+def _focus_value(result: dict, key: str, *, signed: bool = True) -> float:
+    """Return a quadrupole table value in V/pC/m^3.
+
+    New quadrupole analyses store signed, phase-aligned values for Kxx, Kyy,
+    Kxy and Kiso.  K_Q is a positive scalar strength.  Older outputs may only
+    contain raw V/C/m/m values; these are used as last-resort fallbacks.
     """
-    Helper for quadrupole dictionaries, allowing for future minor naming changes.
-    """
-    candidates = [
+    per_pc_candidates = [
+        f"{key}_V_per_pC_per_m3",
+        f"{key}_V_per_pC_per_m_per_m_per_m",
+    ]
+    per_c_candidates = [
+        f"{key}_V_per_C_per_m3",
         f"{key}_V_per_C_per_m_per_m",
         key,
     ]
-    for candidate in candidates:
+
+    for candidate in per_pc_candidates:
         if candidate in result:
-            return float(result[candidate])
+            val = finite_or_nan(result[candidate])
+            return val if signed else abs(val)
+
+    for candidate in per_c_candidates:
+        if candidate in result:
+            # Last-resort legacy fallback.  If this is genuinely V/C, convert to
+            # V/pC by 1e-12.  If it is an old raw K, the value is only suitable
+            # for diagnostics; regenerate the quadrupole analysis for final tables.
+            val = per_C_to_per_pC(result[candidate])
+            return val if signed else abs(val)
+
     raise KeyError(f"Could not find {key} in quadrupole focusing result.")
 
+
+def _quadrupole_metric_values(focusing: dict, key: str, *, signed: bool) -> tuple[float, float, float, float]:
+    return (
+        _focus_value(focusing["E1"], key, signed=signed),
+        _focus_value(focusing["E2"], key, signed=signed),
+        _focus_value(focusing["plus"], key, signed=signed),
+        _focus_value(focusing["minus"], key, signed=signed),
+    )
 
 def load_quadrupole_rows(quad_path: str | Path) -> dict[str, dict]:
     """
     Load homotypic quadrupole crossing entries from all_crossing_analyses.pkl.
-    Expected metrics are item["focusing"][E1/E2/plus/minus] with Kxx, Kxy and Kyy.
+
+    New outputs contain signed, phase-aligned Kxx, Kyy, Kxy and Kiso in
+    V/pC/m^3, plus positive K_Q.  The table reports these signed quantities so
+    monopole-like isotropic curvature and quadrupole-like anisotropy remain
+    distinguishable.
     """
     data = pickle_load(Path(quad_path) / "all_crossing_analyses.pkl")
     items = data.values() if isinstance(data, dict) else data
@@ -251,20 +381,28 @@ def load_quadrupole_rows(quad_path: str | Path) -> dict[str, dict]:
         focusing = item["focusing"]
 
         metrics = []
-        for effect_key, effect_tex in [
-            ("Kxx", r"$K_{xx}$"),
-            ("Kyy", r"$K_{yy}$"),
-            ("Kxy", r"$K_{xy}$"),
+        for effect_key, effect_tex, signed in [
+            ("Kiso", r"$K_{\mathrm{iso}}$", True),
+            ("K_Q", r"$K_Q$", False),
+            ("Kxx", r"$K_{xx}$", True),
+            ("Kyy", r"$K_{yy}$", True),
+            ("Kxy", r"$K_{xy}$", True),
         ]:
-            E1 = _focus_value(focusing["E1"], effect_key)
-            E2 = _focus_value(focusing["E2"], effect_key)
-            Eplus = _focus_value(focusing["plus"], effect_key)
-            Eminus = _focus_value(focusing["minus"], effect_key)
+            # Compatibility with earlier quadrupole output that used
+            # K_quad_strength rather than K_Q.
+            lookup_key = "K_quad_strength" if effect_key == "K_Q" and "K_Q_V_per_pC_per_m3" not in focusing["E1"] else effect_key
+
+            E1, E2, Eplus, Eminus = _quadrupole_metric_values(
+                focusing,
+                lookup_key,
+                signed=signed,
+            )
 
             metrics.append(
                 {
+                    "metric": effect_tex,
                     "effect": effect_tex,
-                    "units": r"V\,C$^{-1}$\,m$^{-2}$",
+                    "units": r"$\mathrm{V/pC/m^3}$",
                     "E1": E1,
                     "E2": E2,
                     "Eplus": Eplus,
@@ -307,24 +445,24 @@ def single_crossing_metric_table(row: dict) -> str:
     metric_rows = []
     for metric in row["metrics"]:
         metric_rows.append(
-            rf"{metric['effect']} "
+            rf"{metric.get('metric', metric.get('effect'))} "
             rf"& {metric['units']} "
             rf"& {latex_num(metric['E1'])} "
             rf"& {latex_num(metric['E2'])} "
             rf"& {latex_num(metric['Eplus'])} "
             rf"& {latex_num(metric['Eminus'])} "
-            rf"& {metric['R_max']:.2f} \\"
+            rf"& {latex_ratio(metric['R_max'], 3)} \\"
         )
 
     return rf"""
 \begin{{center}}
 \small
 \renewcommand{{\arraystretch}}{{1.35}}
-\setlength{{\tabcolsep}}{{6pt}}
-\textbf{{Homotypic {class_label} crossing for ${latex_mode(mode_i)}$ and ${latex_mode(mode_j)}$, $\ell = {row['length_factor']:.4f}$, $\hat{{f}} = {row['frequency_normalised']:.4f}$}}\\[0.35em]
+\setlength{{\tabcolsep}}{{4.5pt}}
+\textbf{{Homotypic {class_label} crossing for ${latex_mode(mode_i)}$ and ${latex_mode(mode_j)}$, $\ell = {row['length_factor']:.4f}$, $\hat{{f}} = {row['frequency_normalised']:.4f}$}}\\[0.15em]
 \begin{{ruledtabular}}
 \begin{{tabular}}{{ccccccc}}
-Effect & Units & $E_1$ & $E_2$ & $E_+$ & $E_-$ & $R_{{\max}}$ \\
+Beam-dynamics metric & Units & $E_1$ & $E_2$ & $E_+$ & $E_-$ & $R_{{\max}}$ \\
 \hline
 {chr(10).join(metric_rows)}
 \end{{tabular}}
@@ -445,7 +583,7 @@ def monopole_loss_table(local_table_dict: dict) -> str:
             rf"& {latex_num(row['loss_E2'])} "
             rf"& {latex_num(row['loss_Eplus'])} "
             rf"& {latex_num(row['loss_Eminus'])} "
-            rf"& {R_max:.2f} \\"
+            rf"& {latex_ratio(R_max, 3)} \\"
         )
 
     rows = "\n".join(rows)

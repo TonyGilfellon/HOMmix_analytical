@@ -18,6 +18,84 @@ from scipy.special import jn_zeros
 
 C0 = 299_792_458.0
 EPS0 = 8.854_187_8128e-12
+PC = 1.0e-12
+
+
+def quadrupole_reported_from_raw_K(
+    K_raw_real: np.ndarray,
+    *,
+    U_CST_J: float,
+    length_m: float,
+) -> dict[str, float]:
+    """Return signed, phase-aligned quadrupole figures in V/pC/m^3.
+
+    ``K_raw_real`` must already be phase-aligned and real, with units
+    V/C/m/m.  Earlier versions stored only non-negative values using
+    ``|K_ij|^2/(4 U_CST L)``.  That loses the distinction between
+    monopole-like isotropic curvature (Kxx ~= Kyy) and quadrupole-like
+    curvature (Kxx ~= -Kyy).
+
+    The values returned here keep the signs and use the same signed convention
+    now used in the heterotypic appendix workflow:
+
+        K_reported = K_raw_real / sqrt(4 U_CST) / L * 1e-12.
+
+    This keeps Kxx, Kxy, Kyy and K_iso signed.  K_Q is a positive scalar
+    quadrupole strength,
+
+        K_Q = sqrt((Kxx - Kyy)^2 + 4 Kxy^2).
+
+    Legacy square-normalised magnitudes are also retained under explicit
+    ``*_squaremag_*`` names for traceability.
+    """
+    K = np.asarray(K_raw_real, dtype=float)
+    U = float(U_CST_J)
+    L = float(length_m)
+    if K.shape != (2, 2):
+        raise ValueError(f"K_raw_real must be shape (2, 2), got {K.shape}")
+    if not np.isfinite(U) or U <= 0.0:
+        raise ValueError(f"U_CST_J must be positive and finite, got {U_CST_J!r}")
+    if not np.isfinite(L) or L <= 0.0:
+        raise ValueError(f"length_m must be positive and finite, got {length_m!r}")
+
+    signed_scale = PC / (np.sqrt(4.0 * U) * L)
+    Krep = K * signed_scale
+
+    Kxx = float(Krep[0, 0])
+    Kxy = float(Krep[0, 1])
+    Kyy = float(Krep[1, 1])
+    Kiso = 0.5 * (Kxx + Kyy)
+    KQ = float(np.sqrt((Kxx - Kyy) ** 2 + 4.0 * Kxy ** 2))
+    Kfro = float(np.linalg.norm(Krep))
+
+    square_scale = PC / (4.0 * U * L)
+    return {
+        # Primary PRAB/table values: signed except scalar strengths.
+        "Kxx_V_per_pC_per_m3": Kxx,
+        "Kxy_V_per_pC_per_m3": Kxy,
+        "Kyy_V_per_pC_per_m3": Kyy,
+        "Kiso_V_per_pC_per_m3": float(Kiso),
+        "K_Q_V_per_pC_per_m3": KQ,
+        "K_quad_strength_V_per_pC_per_m3": KQ,  # compatibility alias
+        "K_frobenius_V_per_pC_per_m3": Kfro,
+
+        # Same values in V/C/m^3.
+        "Kxx_V_per_C_per_m3": float(K[0, 0] / (np.sqrt(4.0 * U) * L)),
+        "Kxy_V_per_C_per_m3": float(K[0, 1] / (np.sqrt(4.0 * U) * L)),
+        "Kyy_V_per_C_per_m3": float(K[1, 1] / (np.sqrt(4.0 * U) * L)),
+        "Kiso_V_per_C_per_m3": float(0.5 * (K[0, 0] + K[1, 1]) / (np.sqrt(4.0 * U) * L)),
+        "K_Q_V_per_C_per_m3": float(KQ / PC),
+
+        # Legacy non-negative square-normalised values, explicitly named.
+        "Kxx_squaremag_V_per_pC_per_m3": float(abs(K[0, 0]) ** 2 * square_scale),
+        "Kxy_squaremag_V_per_pC_per_m3": float(abs(K[0, 1]) ** 2 * square_scale),
+        "Kyy_squaremag_V_per_pC_per_m3": float(abs(K[1, 1]) ** 2 * square_scale),
+        "K_quad_strength_squaremag_V_per_pC_per_m3": float(
+            ((K[0, 0] - K[1, 1]) ** 2 + 4.0 * K[0, 1] ** 2) * square_scale
+        ),
+        "K_frobenius_squaremag_V_per_pC_per_m3": float(np.sum(K * K) * square_scale),
+        "K_reported_convention": "signed phase-aligned K_raw/sqrt(4 U_CST)/length_m; K_Q positive",
+    }
 
 
 def pickle_save(obj, filename):
@@ -683,10 +761,19 @@ def plot_field_slices(field_data: dict, out_dir: str, title: str = ""):
         plt.close(fig)
 
 
-def accelerating_voltage_complex(Ez_line, z_m, omega, beta=1.0):
-    zc = np.asarray(z_m, float) - 0.5*(z_m[0] + z_m[-1])
+def accelerating_voltage_complex(Ez_line, z_m, omega, beta=1.0, *, centre_z: bool = False):
+    """Complex transit-time voltage using the shared convention.
+
+    centre_z=False gives z in [0,L], matching the U_CST-consistent
+    monopole, dipole and heterotypic analyses.  A centred phase only changes
+    the global phase for a full integral, but using one convention everywhere
+    avoids sign/phase ambiguity in fitted complex coefficients.
+    """
+    z_use = np.asarray(z_m, float)
+    if centre_z:
+        z_use = z_use - 0.5 * (z_use[0] + z_use[-1])
     Ez_line = np.asarray(Ez_line, float)
-    return np.trapz(Ez_line * np.exp(1j*omega*zc/(beta*C0)), zc)
+    return np.trapezoid(Ez_line * np.exp(1j * omega * z_use / (beta * C0)), z_use)
 
 
 def kick_from_Ez_field(Ez, f_010, f_mnp, l_factor, Req_m, *, axis="y", fit_pixels=8, beta=1.0):
@@ -720,6 +807,144 @@ def kick_from_Ez_field(Ez, f_010, f_mnp, l_factor, Req_m, *, axis="y", fit_pixel
     return {"r_m": r, "Vz_complex_V": Vc, "dVz_dr_V_per_m": dVdr, "Vperp_per_m_offset_V_per_m": Vperp_per_m_offset, "kick_V_per_C_per_m_per_m": kick_V_per_C_per_m2, "transverse_pixel_m": dx if axis == "x" else dy, "longitudinal_pixel_m": L/(nz-1), "axis": axis}
 
 
+
+
+def _field_energy_integrals(
+    Ex,
+    Ey,
+    Ez,
+    *,
+    Req_m: float,
+    length_m: float,
+    axis_i: float | None = None,
+    axis_j: float | None = None,
+    radius_pixels: float | None = None,
+) -> dict:
+    """Return CST-equivalent electric-field energy diagnostics.
+
+    For the analytical lossless eigenmodes used here we do not explicitly carry
+    magnetic field maps.  The CST-equivalent total stored energy is therefore
+
+        U_CST = 0.5 eps0 integral |E|^2 dV,
+
+    because the total time-averaged electromagnetic energy equals twice the
+    time-averaged electric energy for a resonant mode.
+    """
+    Ez = np.nan_to_num(np.asarray(Ez, float), nan=0.0, posinf=0.0, neginf=0.0)
+    Ex = np.zeros_like(Ez) if Ex is None else np.nan_to_num(np.asarray(Ex, float), nan=0.0, posinf=0.0, neginf=0.0)
+    Ey = np.zeros_like(Ez) if Ey is None else np.nan_to_num(np.asarray(Ey, float), nan=0.0, posinf=0.0, neginf=0.0)
+    if not (Ex.shape == Ey.shape == Ez.shape):
+        raise ValueError(f"Ex, Ey, Ez shapes must match, got {Ex.shape}, {Ey.shape}, {Ez.shape}")
+
+    nx, ny, nz = Ez.shape
+    if axis_i is None:
+        axis_i = float(nx // 2)
+    if axis_j is None:
+        axis_j = float(ny // 2)
+    if radius_pixels is None:
+        radius_pixels = float(min(axis_i, axis_j, nx - 1 - axis_i, ny - 1 - axis_j))
+    if radius_pixels <= 0:
+        raise ValueError(f"radius_pixels must be positive, got {radius_pixels!r}")
+
+    dx = float(Req_m) / float(radius_pixels)
+    dy = dx
+    dz = float(length_m) / (nz - 1)
+
+    x = (np.arange(nx, dtype=float) - float(axis_i)) * dx
+    y = (np.arange(ny, dtype=float) - float(axis_j)) * dy
+    X, Y = np.meshgrid(x, y, indexing="ij")
+    mask = (X * X + Y * Y) <= float(Req_m) * float(Req_m)
+    mask3 = mask[:, :, None]
+
+    int_Ex2 = float(np.sum(Ex * Ex * mask3) * dx * dy * dz)
+    int_Ey2 = float(np.sum(Ey * Ey * mask3) * dx * dy * dz)
+    int_Ez2 = float(np.sum(Ez * Ez * mask3) * dx * dy * dz)
+    int_Etotal2 = int_Ex2 + int_Ey2 + int_Ez2
+    U_CST = 0.5 * EPS0 * int_Etotal2
+    if not np.isfinite(U_CST) or U_CST <= 0.0:
+        raise ValueError(f"Calculated non-positive U_CST={U_CST!r}")
+    return {
+        "int_Ex2_dV": int_Ex2,
+        "int_Ey2_dV": int_Ey2,
+        "int_Ez2_dV": int_Ez2,
+        "int_Etotal2_dV": int_Etotal2,
+        "U_Etotal_time_average_J": 0.25 * EPS0 * int_Etotal2,
+        "U_CST_J": U_CST,
+        "dx_m": dx,
+        "dy_m": dy,
+        "dz_m": dz,
+        "axis_i": float(axis_i),
+        "axis_j": float(axis_j),
+        "radius_pixels": float(radius_pixels),
+    }
+
+
+def _write_quadrupole_diagnostic_txt(filename, *, label, frequency_Hz, length_m, beta, fit_pixels, result):
+    """Write a detailed one-field quadrupole diagnostic text file."""
+    filename = Path(filename)
+    filename.parent.mkdir(parents=True, exist_ok=True)
+    e = result.get("energy_diagnostics", {})
+    c = result.get("poly_coefficients_complex", {})
+    lines = []
+    lines.append(f"{label}: quadrupole focusing/defocusing diagnostic")
+    lines.append("")
+    lines.append("CONVENTIONS")
+    lines.append("  z convention                  = z in [0,L], centre_z=False")
+    lines.append("  U_CST_J                       = 0.5 eps0 integral |E|^2 dV")
+    lines.append("  raw K                         = (c/omega) Hessian(Vz)")
+    lines.append("  U-normalised signed K         = raw K / sqrt(4 U_CST_J)  [diagnostic]")
+    lines.append("  sign convention               = positive Kxx deflects positive charge toward +x; electron label is reversed")
+    lines.append("")
+    lines.append("BASIC PARAMETERS")
+    lines.append(f"  label                         = {label}")
+    lines.append(f"  frequency_Hz                  = {float(frequency_Hz):.12e}")
+    lines.append(f"  length_m                      = {float(length_m):.12e}")
+    lines.append(f"  beta                          = {float(beta):.12g}")
+    lines.append(f"  fit_pixels                    = {int(fit_pixels)}")
+    lines.append(f"  transverse_pixel_m            = {result.get('transverse_pixel_m', float('nan')):.12e}")
+    lines.append(f"  longitudinal_pixel_m          = {result.get('longitudinal_pixel_m', float('nan')):.12e}")
+    lines.append(f"  fit_points                    = {len(result.get('fit_points_xy_m', []))}")
+    lines.append("")
+    lines.append("STORED ENERGY")
+    for key in ("int_Ex2_dV", "int_Ey2_dV", "int_Ez2_dV", "int_Etotal2_dV", "U_Etotal_time_average_J", "U_CST_J"):
+        if key in e:
+            lines.append(f"  {key:30s} = {e[key]:.12e}")
+    lines.append("")
+    lines.append("POLYNOMIAL COEFFICIENTS")
+    for key in ("a0", "ax", "ay", "axx", "axy", "ayy"):
+        if key in c:
+            val = c[key]
+            lines.append(f"  {key:30s} = {val.real:.12e} {val.imag:+.12e}j")
+    lines.append("")
+    lines.append("RAW PANOFKSY-WENZEL MATRIX")
+    lines.append(f"  units                         = V/C/m/m for 1 C field-map amplitude")
+    lines.append(f"  Kxx_raw                       = {result['Kxx_raw_V_per_C_per_m_per_m']:.12e}")
+    lines.append(f"  Kxy_raw                       = {result['Kxy_raw_V_per_C_per_m_per_m']:.12e}")
+    lines.append(f"  Kyy_raw                       = {result['Kyy_raw_V_per_C_per_m_per_m']:.12e}")
+    lines.append(f"  K_quad_strength_raw           = {result['K_quad_strength_raw_V_per_C_per_m_per_m']:.12e}")
+    lines.append("")
+    lines.append("U_CST-NORMALISED SIGNED MATRIX (diagnostic)")
+    lines.append(f"  Kxx_U_CST                     = {result['Kxx_U_CST_norm']:.12e}")
+    lines.append(f"  Kxy_U_CST                     = {result['Kxy_U_CST_norm']:.12e}")
+    lines.append(f"  Kyy_U_CST                     = {result['Kyy_U_CST_norm']:.12e}")
+    lines.append(f"  K_quad_strength_U_CST         = {result['K_quad_strength_U_CST_norm']:.12e}")
+    lines.append(f"  K_frobenius_U_CST             = {result['K_frobenius_U_CST_norm']:.12e}")
+    lines.append(f"  eigenvalues_U_CST             = {result['eigenvalues_U_CST_norm']}")
+    lines.append("")
+    lines.append("REPORTED PRAB/TABLE MATRIX")
+    lines.append("  units                         = V/pC/m^3")
+    lines.append("  convention                    = |K_raw|^2/(4 U_CST length_m) * 1e-12")
+    lines.append(f"  Kxx_reported                  = {result['Kxx_V_per_pC_per_m3']:.12e}")
+    lines.append(f"  Kxy_reported                  = {result['Kxy_V_per_pC_per_m3']:.12e}")
+    lines.append(f"  Kyy_reported                  = {result['Kyy_V_per_pC_per_m3']:.12e}")
+    lines.append(f"  K_quad_strength_reported      = {result['K_quad_strength_V_per_pC_per_m3']:.12e}")
+    lines.append("")
+    lines.append("CLASSIFICATION")
+    lines.append(f"  electron x                    = {result['electron_force_classification']['x']}")
+    lines.append(f"  electron y                    = {result['electron_force_classification']['y']}")
+    filename.write_text("\n".join(lines))
+
+
 # -----------------------------------------------------------------------------
 # Quadrupole focusing / defocusing analysis
 # -----------------------------------------------------------------------------
@@ -740,8 +965,15 @@ def quadrupole_focusing_from_Ez_field(
     l_factor: float,
     Req_m: float,
     *,
+    Ex=None,
+    Ey=None,
     fit_pixels: int = 8,
     beta: float = 1.0,
+    axis_i: float | None = None,
+    axis_j: float | None = None,
+    radius_pixels: float | None = None,
+    save_directory: str | Path | None = None,
+    label: str = "",
 ) -> dict:
     """Estimate quadrupole focusing/defocusing from the complex Vz(x,y) map.
 
@@ -774,8 +1006,25 @@ def quadrupole_focusing_from_Ez_field(
     ix0, iy0 = nx // 2, ny // 2
     L = (C0 / float(f_010)) / 2.0 * float(l_factor)
     z_m = np.linspace(0.0, L, nz)
-    dx = 2.0 * float(Req_m) / (nx - 1)
-    dy = 2.0 * float(Req_m) / (ny - 1)
+
+    if axis_i is None:
+        axis_i = float(ix0)
+    if axis_j is None:
+        axis_j = float(iy0)
+    if radius_pixels is None:
+        radius_pixels = float(min(axis_i, axis_j, nx - 1 - axis_i, ny - 1 - axis_j))
+
+    energy = _field_energy_integrals(
+        Ex, Ey, Ez,
+        Req_m=float(Req_m),
+        length_m=L,
+        axis_i=axis_i,
+        axis_j=axis_j,
+        radius_pixels=radius_pixels,
+    )
+    U_CST_J = energy["U_CST_J"]
+    dx = energy["dx_m"]
+    dy = energy["dy_m"]
     omega = 2.0 * np.pi * float(f_mnp)
 
     max_px = min(int(fit_pixels), ix0 - 1, iy0 - 1)
@@ -787,7 +1036,7 @@ def quadrupole_focusing_from_Ez_field(
             y = (j - iy0) * dy
             # Use a circular fitting aperture to reduce square-corner bias.
             if np.hypot(x, y) <= max_px * min(dx, dy):
-                V = accelerating_voltage_complex(Ez[i, j, :], z_m, omega, beta=beta)
+                V = accelerating_voltage_complex(Ez[i, j, :], z_m, omega, beta=beta, centre_z=False)
                 points.append((x, y))
                 values.append(V)
 
@@ -803,7 +1052,13 @@ def quadrupole_focusing_from_Ez_field(
     a0, ax, ay, axx, axy, ayy = coeff
 
     H = np.array([[2.0 * axx, axy], [axy, 2.0 * ayy]], dtype=complex)  # d2Vz/dx_i dx_j, V/m^2
-    K = (C0 / omega) * H  # transverse-voltage gradient, V/m^2 == V/C/m/m for 1 C map norm
+    K_raw = (C0 / omega) * H  # transverse-voltage gradient, V/m^2 == V/C/m/m for 1 C map norm
+    K_raw_phase, phase_rad = _phase_align_complex_matrix(K_raw)
+    K_raw_real = K_raw_phase.real
+
+    # U_CST-normalised signed quadrupole matrix.  This matches the refined
+    # Method-1/Method-2 comparison convention used elsewhere in the project.
+    K = K_raw / np.sqrt(4.0 * U_CST_J)
     K_phase, phase_rad = _phase_align_complex_matrix(K)
     K_real = K_phase.real
     evals, evecs = np.linalg.eigh(K_real)
@@ -816,30 +1071,73 @@ def quadrupole_focusing_from_Ez_field(
     electron_x = "focusing" if Kxx > 0 else "defocusing" if Kxx < 0 else "neutral"
     electron_y = "focusing" if Kyy > 0 else "defocusing" if Kyy < 0 else "neutral"
 
-    return {
+    out = {
         "fit_points_xy_m": pts,
         "Vz_complex_V": Vc,
         "poly_coefficients_complex": {
             "a0": a0, "ax": ax, "ay": ay, "axx": axx, "axy": axy, "ayy": ayy,
         },
         "hessian_V_per_m2_complex": H,
+        "U_CST_J": U_CST_J,
+        "energy_diagnostics": energy,
+        "gradient_matrix_raw_V_per_C_per_m_per_m_complex": K_raw,
+        "gradient_matrix_raw_phase_aligned_real_V_per_C_per_m_per_m": K_raw_real,
         "gradient_matrix_V_per_C_per_m_per_m_complex": K,
         "phase_reference_rad": phase_rad,
         "gradient_matrix_phase_aligned_real_V_per_C_per_m_per_m": K_real,
         "eigenvalues_phase_aligned_V_per_C_per_m_per_m": evals,
+        "eigenvalues_U_CST_norm": evals,
         "eigenvectors_columns_xy": evecs,
-        "Kxx_V_per_C_per_m_per_m": Kxx,
-        "Kxy_V_per_C_per_m_per_m": float(K_real[0, 1]),
-        "Kyy_V_per_C_per_m_per_m": Kyy,
-        "trace_V_per_C_per_m_per_m": float(np.trace(K_real)),
+        "Kxx_raw_V_per_C_per_m_per_m": float(K_raw_real[0, 0]),
+        "Kxy_raw_V_per_C_per_m_per_m": float(K_raw_real[0, 1]),
+        "Kyy_raw_V_per_C_per_m_per_m": float(K_raw_real[1, 1]),
+        "K_quad_strength_raw_V_per_C_per_m_per_m": float(np.sqrt((K_raw_real[0,0] - K_raw_real[1,1])**2 + 4.0*K_raw_real[0,1]**2)),
+        **quadrupole_reported_from_raw_K(K_raw_real, U_CST_J=U_CST_J, length_m=L),
+        "Kxx_U_CST_norm": Kxx,
+        "Kxy_U_CST_norm": float(K_real[0, 1]),
+        "Kyy_U_CST_norm": Kyy,
+        "K_quad_strength_U_CST_norm": float(np.sqrt((K_real[0,0] - K_real[1,1])**2 + 4.0*K_real[0,1]**2)),
+        "K_frobenius_U_CST_norm": float(np.linalg.norm(K_real)),
+        # Legacy aliases retained as signed raw V/C/m/m diagnostics only.
+        # PRAB/table values must use K*_V_per_pC_per_m3.
+        "Kxx_V_per_C_per_m_per_m": float(K_raw_real[0, 0]),
+        "Kxy_V_per_C_per_m_per_m": float(K_raw_real[0, 1]),
+        "Kyy_V_per_C_per_m_per_m": float(K_raw_real[1, 1]),
+        "trace_V_per_C_per_m_per_m": float(np.trace(K_raw_real)),
         "determinant": float(np.linalg.det(K_real)),
         "voltage_gradient_classification": {"x": voltage_x, "y": voltage_y},
         "electron_force_classification": {"x": electron_x, "y": electron_y},
         "transverse_pixel_m": dx,
         "longitudinal_pixel_m": L / (nz - 1),
         "fit_pixels": max_px,
-        "units": "V/C/m/m",
+        "units": "reported Kxx/Kxy/Kyy are signed phase-aligned values in V/pC/m^3 using K_raw/sqrt(4 U_CST)/L*1e-12; Kiso is signed and K_Q is positive",
     }
+
+    if save_directory is not None:
+        save_directory = Path(save_directory)
+        save_directory.mkdir(parents=True, exist_ok=True)
+        tag = f"{label}_" if label else ""
+        _write_quadrupole_diagnostic_txt(
+            save_directory / f"{tag}diagnostic.txt",
+            label=label or "field",
+            frequency_Hz=float(f_mnp),
+            length_m=L,
+            beta=beta,
+            fit_pixels=max_px,
+            result=out,
+        )
+        np.savez_compressed(
+            save_directory / f"{tag}quadrupole_diagnostics.npz",
+            U_CST_J=U_CST_J,
+            H_complex=H,
+            K_raw_complex=K_raw,
+            K_U_CST_complex=K,
+            K_U_CST_real=K_real,
+            fit_points_xy_m=pts,
+            Vz_complex=Vc,
+        )
+
+    return out
 
 
 def plot_quadrupole_voltage_fit(focus_result: dict, out_png: str, title: str = ""):

@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import numpy as np
-import HOMmix_analytical_master_module_quadrupole as hamm
+import HOMmix_analytical_master_module_quadrupole_U_CST as hamm
 import matplotlib.pyplot as plt
 
 
@@ -93,11 +93,54 @@ def focusing_summary_line(name: str, result: dict) -> str:
     """Compact one-line focusing/defocusing summary."""
     ecls = result["electron_force_classification"]
     return (
-        f"  {name:5s}: Kxx={result['Kxx_V_per_C_per_m_per_m']:.6e}, "
-        f"Kxy={result['Kxy_V_per_C_per_m_per_m']:.6e}, "
-        f"Kyy={result['Kyy_V_per_C_per_m_per_m']:.6e} V/C/m/m; "
+        f"  {name:5s}: Kxx={result['Kxx_V_per_pC_per_m3']:.6e}, "
+        f"Kxy={result['Kxy_V_per_pC_per_m3']:.6e}, "
+        f"Kyy={result['Kyy_V_per_pC_per_m3']:.6e}, "
+        f"Kiso={result['Kiso_V_per_pC_per_m3']:.6e} V/pC/m^3; "
+        f"KQ={result['K_Q_V_per_pC_per_m3']:.6e} V/pC/m^3; "
         f"electron x={ecls['x']}, y={ecls['y']}"
     )
+
+def write_crossing_quadrupole_summary(out_file: str | Path, *, key: str, mode_i: str, mode_j: str, crossing: dict, focusing: dict) -> None:
+    out_file = Path(out_file)
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    lines = []
+    lines.append(f"Quadrupole U_CST diagnostic: TM{mode_i} -- TM{mode_j}")
+    lines.append(f"crossing_key = {key}")
+    lines.append(f"length_factor = {float(crossing['length_factor']):.12e}")
+    lines.append(f"frequency_Hz = {float(crossing['frequency_Hz']):.12e}")
+    lines.append("")
+    lines.append("CONVENTIONS")
+    lines.append("  U_CST_J = 0.5 eps0 integral |E|^2 dV")
+    lines.append("  z convention = z in [0,L], centre_z=False")
+    lines.append("  raw K = phase-aligned (c/omega) Hessian(Vz) [V/C/m/m]")
+    lines.append("  reported signed K = K_raw/sqrt(4 U_CST)/length_m * 1e-12 [V/pC/m^3]")
+    lines.append("  Kiso = (Kxx + Kyy)/2 retains sign; KQ = sqrt((Kxx-Kyy)^2 + 4 Kxy^2) is positive")
+    lines.append("")
+    for name in ("E1", "E2", "plus", "minus"):
+        r = focusing[name]
+        lines.append(f"{name}:")
+        lines.append(f"  U_CST_J                       = {r['U_CST_J']:.12e}")
+        lines.append(f"  Kxx_raw_V_per_C_per_m_per_m   = {r['Kxx_raw_V_per_C_per_m_per_m']:.12e}")
+        lines.append(f"  Kxy_raw_V_per_C_per_m_per_m   = {r['Kxy_raw_V_per_C_per_m_per_m']:.12e}")
+        lines.append(f"  Kyy_raw_V_per_C_per_m_per_m   = {r['Kyy_raw_V_per_C_per_m_per_m']:.12e}")
+        lines.append(f"  Kxx_U_CST_norm                = {r['Kxx_U_CST_norm']:.12e}")
+        lines.append(f"  Kxy_U_CST_norm                = {r['Kxy_U_CST_norm']:.12e}")
+        lines.append(f"  Kyy_U_CST_norm                = {r['Kyy_U_CST_norm']:.12e}")
+        lines.append(f"  K_quad_strength_U_CST_norm    = {r['K_quad_strength_U_CST_norm']:.12e}")
+        lines.append(f"  Kxx_signed_V_per_pC_per_m3    = {r['Kxx_V_per_pC_per_m3']:.12e}")
+        lines.append(f"  Kxy_signed_V_per_pC_per_m3    = {r['Kxy_V_per_pC_per_m3']:.12e}")
+        lines.append(f"  Kyy_signed_V_per_pC_per_m3    = {r['Kyy_V_per_pC_per_m3']:.12e}")
+        lines.append(f"  Kiso_signed_V_per_pC_per_m3   = {r['Kiso_V_per_pC_per_m3']:.12e}")
+        lines.append(f"  KQ_V_per_pC_per_m3            = {r['K_Q_V_per_pC_per_m3']:.12e}")
+        if "Kxx_squaremag_V_per_pC_per_m3" in r:
+            lines.append(f"  Kxx_squaremag_legacy          = {r['Kxx_squaremag_V_per_pC_per_m3']:.12e}")
+            lines.append(f"  Kxy_squaremag_legacy          = {r['Kxy_squaremag_V_per_pC_per_m3']:.12e}")
+            lines.append(f"  Kyy_squaremag_legacy          = {r['Kyy_squaremag_V_per_pC_per_m3']:.12e}")
+        lines.append(f"  electron_x/electron_y         = {r['electron_force_classification']['x']} / {r['electron_force_classification']['y']}")
+        lines.append("")
+    out_file.write_text("\n".join(lines))
+
 
 
 
@@ -319,21 +362,25 @@ def analyse_crossing(
     Req_m = hamm.pillbox_radius_from_freq(f_010)
 
     focus_jobs = {
-        "E1": (field_data["E1_Ez"], float(data_dict["TM"][mode_i]["design_frequency_Hz"]), 1.0),
-        "E2": (field_data["E2_Ez"], float(data_dict["TM"][mode_j]["design_frequency_Hz"]), 1.0),
-        "plus": (field_data["Ez_plus"], f_cross, lf_cross),
-        "minus": (field_data["Ez_minus"], f_cross, lf_cross),
+        "E1": (field_data["E1_Ex"], field_data["E1_Ey"], field_data["E1_Ez"], float(data_dict["TM"][mode_i]["design_frequency_Hz"]), 1.0),
+        "E2": (field_data["E2_Ex"], field_data["E2_Ey"], field_data["E2_Ez"], float(data_dict["TM"][mode_j]["design_frequency_Hz"]), 1.0),
+        "plus": (field_data["Ex_plus"], field_data["Ey_plus"], field_data["Ez_plus"], f_cross, lf_cross),
+        "minus": (field_data["Ex_minus"], field_data["Ey_minus"], field_data["Ez_minus"], f_cross, lf_cross),
     }
 
     focusing = {}
-    for name, (Ez, freq, lf) in focus_jobs.items():
+    for name, (Ex, Ey, Ez, freq, lf) in focus_jobs.items():
         focusing[name] = hamm.quadrupole_focusing_from_Ez_field(
             Ez,
             f_010=f_010,
             f_mnp=freq,
             l_factor=lf,
             Req_m=Req_m,
+            Ex=Ex,
+            Ey=Ey,
             fit_pixels=fit_pixels,
+            save_directory=out_dir / "quadrupole_diagnostics" / name,
+            label=name,
         )
         hamm.plot_quadrupole_voltage_fit(
             focusing[name],
@@ -358,7 +405,7 @@ def analyse_crossing(
             "peak_before": rot_j["peak_before"],
             "peak_after": rot_j["peak_after"],
         },
-        "focusing_units": "V/C/m/m",
+        "focusing_units": "reported Kxx/Kxy/Kyy are signed phase-aligned values in V/pC/m^3 using K_raw/sqrt(4 U_CST)/L*1e-12; Kiso is signed and K_Q is positive",
         "focusing_sign_convention": (
             "K is the phase-aligned transverse-voltage gradient matrix. "
             "Positive Kxx deflects a positive test charge further +x; "
@@ -374,6 +421,15 @@ def analyse_crossing(
         "merged_slice_pdf": str(merged_slice_pdf),
         },
     }
+    write_crossing_quadrupole_summary(
+        out_dir / "quadrupole_focusing_summary_U_CST.txt",
+        key=key,
+        mode_i=mode_i,
+        mode_j=mode_j,
+        crossing=crossing,
+        focusing=focusing,
+    )
+
     hamm.pickle_save(analysis, out_dir / "crossing_analysis.pkl")
 
     print(f"\n{key}")

@@ -19,8 +19,8 @@ if __name__ == "__main__":
     if process_data:
         all_data_dict = hamm.assemble_all_data_dict(m_max, n_max, p_max,
                                                frequency_010=1.3e9,
-                                               LF_start=0.7,
-                                               LF_stop=1.3,
+                                               LF_start=0.9,
+                                               LF_stop=1.0,
                                                param_sweep_resolution=1000,
                                                voxel_res=voxel_res,
                                                )
@@ -68,7 +68,16 @@ if __name__ == "__main__":
             m_filter=m_filter_vals[idx],
         )
 
-    """ TM MODES """
+    counts, categories, all_crossings = hamm.plot_crossing_population_heatmap_TM(
+        TM_crossing_results,
+        savepath=savepath,
+        savename="TM_crossing_heatmap_m012",
+        inspect=False,
+    )
+
+    exit()
+
+    """ TE MODES """
 
     TE_crossing_results = hamm.find_mode_crossings_from_all_data(all_data_dict, mode_type="TE")
 

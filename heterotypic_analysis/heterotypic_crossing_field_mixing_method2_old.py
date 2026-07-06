@@ -37,6 +37,37 @@ from scipy.special import jn_zeros
 
 C0 = 299_792_458.0
 EPS0 = 8.854_187_8128e-12
+PC = 1.0e-12
+
+
+def quadrupole_reported_from_raw_K(
+    K_raw_real: np.ndarray,
+    *,
+    U_CST_J: float,
+    length_m: float,
+) -> dict[str, float]:
+    """Canonical reported quadrupole figures in V/pC/m^3.
+
+    Values are square-normalised by stored energy, normalised per metre, and
+    converted from per coulomb to per pC:
+
+        |K_raw|^2 / (4 U_CST L) * 1e-12.
+    """
+    K = np.asarray(K_raw_real, dtype=float)
+    U = float(U_CST_J)
+    L = float(length_m)
+    if not np.isfinite(U) or U <= 0.0:
+        raise ValueError(f"U_CST_J must be positive and finite, got {U_CST_J!r}")
+    if not np.isfinite(L) or L <= 0.0:
+        raise ValueError(f"length_m must be positive and finite, got {length_m!r}")
+    scale = PC / (4.0 * U * L)
+    return {
+        "Kxx_V_per_pC_per_m3": float(abs(K[0, 0]) ** 2 * scale),
+        "Kxy_V_per_pC_per_m3": float(abs(K[0, 1]) ** 2 * scale),
+        "Kyy_V_per_pC_per_m3": float(abs(K[1, 1]) ** 2 * scale),
+        "K_quad_strength_V_per_pC_per_m3": float(((K[0, 0] - K[1, 1]) ** 2 + 4.0 * K[0, 1] ** 2) * scale),
+        "K_frobenius_V_per_pC_per_m3": float(np.sum(K * K) * scale),
+    }
 
 
 def pickle_save(obj, filename):
@@ -1003,6 +1034,7 @@ class MetricParams:
     axis_j: float = 75.0
     radius_pixels: float = 75.0
     local_fit_pixels: int = 3
+    centred_z: bool = False  # Monopole/diagnostic-aligned convention: z in [0,L].
     U_J: float | None = None
 
     @property
@@ -1026,16 +1058,20 @@ def _metric_xy_arrays(shape: tuple[int, int, int], params: MetricParams) -> tupl
 
 
 def stored_energy_from_E_components(Ex: np.ndarray, Ey: np.ndarray, Ez: np.ndarray, params: MetricParams) -> float:
-    """Electric stored-energy proxy calculated separately for each field.
+    """CST-equivalent stored energy calculated separately for each field.
 
-    For the analytical maps in this script only E is available, not H.  This
-    therefore uses the electric-energy integral over the cylindrical aperture,
+    The analytical field_data contains E but not H. For a lossless resonant
+    eigenmode, the CST stored energy,
 
-        U_E = (eps0/2) integral |E|^2 dV.
+        U_CST = 1/4 int (eps0 |E|^2 + mu0 |H|^2) dV,
 
-    It is still useful for consistent per-field normalisation of E1, E2, E+ and
-    E-.  Replace this helper with a full electromagnetic-energy integral if H
-    maps are later available.
+    is equal to the peak electric energy when the available real E-field maps
+    are peak-amplitude maps:
+
+        U_CST = 0.5 eps0 int |E|^2 dV.
+
+    This is integrated over the cylindrical aperture and is used for all
+    k_parallel, k_perp and K normalisations.
     """
     Ex = np.nan_to_num(np.asarray(Ex, float), nan=0.0)
     Ey = np.nan_to_num(np.asarray(Ey, float), nan=0.0)
@@ -1054,10 +1090,19 @@ def stored_energy_from_E_components(Ex: np.ndarray, Ey: np.ndarray, Ez: np.ndarr
 
 
 def accelerating_voltage_map_from_Ez(Ez: np.ndarray, params: MetricParams) -> np.ndarray:
-    """Return complex transit-time voltage map Vz(x,y) from Ez[x,y,z]."""
+    """Return complex transit-time voltage map Vz(x,y) from Ez[x,y,z].
+
+    The default follows the monopole on-axis and diagnostic convention,
+    integrating over z in [0, L].  A centred coordinate only changes the global
+    phase of Vz-derived quantities, but keeping the same convention makes the
+    printed complex voltages directly comparable across scripts.
+    """
     Ez = np.nan_to_num(np.asarray(Ez, float), nan=0.0)
     nz = Ez.shape[2]
-    z = np.linspace(-0.5 * params.length_m, 0.5 * params.length_m, nz)
+    if params.centred_z:
+        z = np.linspace(-0.5 * params.length_m, 0.5 * params.length_m, nz)
+    else:
+        z = np.linspace(0.0, params.length_m, nz)
     phase = np.exp(1j * params.omega * z / (float(params.beta) * C0))
     return np.trapezoid(Ez * phase[None, None, :], z, axis=2)
 
@@ -1140,6 +1185,7 @@ def method2_local_quadratic_metrics_from_components(
         axis_j=params.axis_j,
         radius_pixels=params.radius_pixels,
         local_fit_pixels=params.local_fit_pixels,
+        centred_z=params.centred_z,
         U_J=U,
     )
     Vz_map = accelerating_voltage_map_from_Ez(Ez, params)
@@ -1155,6 +1201,9 @@ def method2_local_quadratic_metrics_from_components(
     k_perp = abs(Vperp_per_m) ** 2 / (4.0 * U)
 
     K_complex_raw = (C0 / params.omega) * H
+    K_raw_phase, phase_K_raw = _phase_align_complex_matrix(K_complex_raw)
+    K_raw_real = K_raw_phase.real
+    reported_K = quadrupole_reported_from_raw_K(K_raw_real, U_CST_J=U, length_m=params.length_m)
     K_complex_U_norm = K_complex_raw / np.sqrt(4.0 * U)
     K_phase, phase_K = _phase_align_complex_matrix(K_complex_U_norm)
     K_real = K_phase.real
@@ -1172,11 +1221,19 @@ def method2_local_quadratic_metrics_from_components(
         "method": "2_local_quadratic_least_squares",
         "frequency_Hz": float(params.frequency_Hz),
         "length_m": float(params.length_m),
-        "U_J_electric_proxy": float(U),
+        "U_CST_J": float(U),
+        "U_J_electric_proxy": float(U),  # backwards-compatible alias
+        "U_normalisation": "U_CST = 0.5*eps0*int(|E|^2)dV",
+        "centred_z": bool(params.centred_z),
         "k_parallel_V_per_C": float(k_parallel),
         "k_parallel_V_per_pC": float(k_parallel * 1e-12),
         "k_perp_V_per_C_per_m2": float(k_perp),
         "k_perp_V_per_pC_per_m2": float(k_perp * 1e-12),
+        "gradient_matrix_raw_phase_aligned_real_V_per_C_per_m_per_m": K_raw_real,
+        "Kxx_raw_V_per_C_per_m_per_m": float(K_raw_real[0, 0]),
+        "Kxy_raw_V_per_C_per_m_per_m": float(K_raw_real[0, 1]),
+        "Kyy_raw_V_per_C_per_m_per_m": float(K_raw_real[1, 1]),
+        **reported_K,
         "Kxx_U_norm": Kxx,
         "Kxy_U_norm": Kxy,
         "Kyy_U_norm": Kyy,
@@ -1245,8 +1302,10 @@ def heterotypic_method2_metrics_table(
         rows.append(m)
 
     ordered = [
-        "field", "method", "frequency_Hz", "length_m", "U_J_electric_proxy",
+        "field", "method", "frequency_Hz", "length_m", "U_CST_J",
         "k_parallel_V_per_pC", "k_perp_V_per_pC_per_m2",
+        "Kxx_V_per_pC_per_m3", "Kxy_V_per_pC_per_m3", "Kyy_V_per_pC_per_m3",
+        "K_quad_strength_V_per_pC_per_m3",
         "Kxx_U_norm", "Kxy_U_norm", "Kyy_U_norm",
         "K_eig_min_U_norm", "K_eig_max_U_norm", "K_quad_strength_U_norm",
         "local_fit_pixels", "local_fit_points", "transverse_pixel_m", "longitudinal_pixel_m",
@@ -1667,6 +1726,18 @@ def get_or_create_heterotypic_field_data(
     method2_df.to_csv(metrics_csv, index=False)
     pickle_save(method2_df, metrics_pkl)
 
+
+    print(f'\n{crossing["mode_i"] = }')
+    print(f'{crossing["mode_j"] = }')
+    print(f'{m_i = }')
+    print(f'{m_j = }')
+    print(f'{f_E1 = }')
+    print(f'{f_E2 = }')
+    print(f'{f_degen = }')
+    print(f'{ell = }')
+    print(f'design length = {(C0 / f_010) / 2.0}')
+    print(f'crossing_length_m = {(C0 / f_010) / 2.0 *ell}')
+
     analysis = {
         "crossing_key": crossing_key,
         "crossing": crossing,
@@ -1755,6 +1826,25 @@ def main() -> None:
     config.savepath.mkdir(parents=True, exist_ok=True)
 
     family_data = {m: load_or_create_family_data(config, m) for m in config.families}
+
+    for m, data in family_data.items():
+        R = pillbox_radius_from_freq(config.f_010)
+        L0 = (C0 / config.f_010) / 2.0
+
+        for mnp, entry in data["TM"].items():
+            mm, nn, pp = map(int, mnp)
+            f_expected = f_tm(mm, nn, pp, R, L0)
+            f_loaded = float(entry["design_frequency_Hz"])
+
+            if not np.isclose(f_loaded, f_expected, rtol=1e-10, atol=1.0):
+                raise ValueError(
+                    f"Stale/inconsistent family data for TM{mnp}: "
+                    f"loaded design_frequency_Hz={f_loaded:.12e}, "
+                    f"expected={f_expected:.12e}. "
+                    f"Regenerate data with create_data=True."
+                )
+            else:
+                print(mm, nn, pp, f_loaded, f_expected)
 
     sweep_table = assemble_sweep_table(family_data, config.f_010)
     pickle_save(sweep_table, config.savepath / "heterotypic_sweep_table.pkl")

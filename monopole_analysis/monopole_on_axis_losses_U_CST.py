@@ -1,5 +1,5 @@
 """
-Monopole pillbox crossing and on-axis loss analysis.
+Monopole pillbox crossing and on-axis loss analysis, Method-2 aligned.
 
 This file is intentionally standalone: the functions previously needed from
 HOMmix_analytical_master_module.py have been moved here so the runnable analysis
@@ -22,6 +22,8 @@ from scipy.special import jn_zeros, jnp_zeros
 from matplotlib.backends.backend_pdf import PdfPages
 
 C0 = 299_792_458.0
+EPS0 = 8.854_187_8128e-12
+PC = 1.0e-12
 
 
 # -----------------------------------------------------------------------------
@@ -450,32 +452,248 @@ def accelerating_voltage_from_real_Ez(
     frequency_Hz: float,
     beta: float = 1.0,
     centre_z: bool = False,
-) -> float:
+) -> complex:
     """
-    Integrate Ez(z) cos(omega z / beta c) dz along the supplied field axis.
+    Complex transit-time-corrected on-axis voltage.
 
-    The pixel-to-metre conversion is controlled only by length_m and Nz:
-      dz = length_m / (Nz - 1).
-    For E1/E2 use length_m = design_length_m. For mixed fields use
-    length_m = design_length_m * crossing length factor.
+    This deliberately uses only Ez(0,0,z), but follows the same transit-time
+    convention as the current Method-2 comparison script:
+
+        Vz = integral_0^L Ez(0,0,z) exp(i omega z / beta c) dz.
+
+    The returned value is complex.  Use abs(Vz) for the accelerating-voltage
+    magnitude.  centre_z=False is the default to match
+    compare_Ez_loss_kick_focus_parent_degen_freqs_localLS.py.
     """
     Ez = np.asarray(Ez_V_per_m, dtype=float)
     if Ez.ndim != 1:
         raise ValueError("Ez_V_per_m must be a 1D on-axis trace.")
     if Ez.size < 2:
         raise ValueError("Ez_V_per_m must contain at least two pixels.")
+
     z_m = np.linspace(0.0, float(length_m), Ez.size)
     if centre_z:
         z_m = z_m - 0.5 * float(length_m)
+
     omega = 2.0 * np.pi * float(frequency_Hz)
-    phase = omega * z_m / (beta * C0)
-    return float(abs(np.trapezoid(Ez * np.cos(phase), z_m)))
+    phase = omega * z_m / (float(beta) * C0)
+    return complex(np.trapezoid(Ez * np.exp(1j * phase), z_m))
 
 
-def loss_from_Vz(Vz: float) -> float:
-    """Original convention retained: k_loss = Vz^2 / 4."""
-    return float(Vz**2 / 4.0)
+def loss_from_Vz(Vz: complex, U_J: float) -> float:
+    """Return stored-energy-normalised k_parallel in V/C."""
+    U_J = float(U_J)
+    if U_J <= 0.0 or not np.isfinite(U_J):
+        raise ValueError(f"Stored energy U_J must be positive and finite, got {U_J!r}.")
+    return float(abs(Vz) ** 2 / (4.0 * U_J))
 
+
+
+def _field_spacing_and_mask(
+    shape: tuple[int, int, int],
+    *,
+    Req_m: float,
+    length_m: float,
+    axis_i: float | None = None,
+    axis_j: float | None = None,
+    radius_pixels: float | None = None,
+) -> tuple[float, float, float, np.ndarray, float, float, float]:
+    """Return dx, dy, dz and the cylindrical transverse mask.
+
+    For the standard 151x151 maps the physical axis is array[75,75,:]
+    and the cylinder radius is 75 pixels from the axis, so dx = Req_m / 75.
+    """
+    nx, ny, nz = shape
+    if min(nx, ny, nz) < 2:
+        raise ValueError("Field arrays must have at least two points on every axis.")
+
+    if axis_i is None:
+        axis_i = float(nx // 2)
+    if axis_j is None:
+        axis_j = float(ny // 2)
+    if radius_pixels is None:
+        radius_pixels = float(min(axis_i, axis_j, nx - 1 - axis_i, ny - 1 - axis_j))
+    if radius_pixels <= 0.0:
+        raise ValueError(f"radius_pixels must be positive, got {radius_pixels!r}.")
+
+    dx = float(Req_m) / float(radius_pixels)
+    dy = dx
+    dz = float(length_m) / (nz - 1)
+
+    x = (np.arange(nx, dtype=float) - float(axis_i)) * dx
+    y = (np.arange(ny, dtype=float) - float(axis_j)) * dy
+    X, Y = np.meshgrid(x, y, indexing="ij")
+    mask_xy = (X * X + Y * Y) <= float(Req_m) * float(Req_m)
+    return dx, dy, dz, mask_xy, float(axis_i), float(axis_j), float(radius_pixels)
+
+
+def stored_energy_from_Ez_only_peak_equivalent(
+    Ez: np.ndarray,
+    *,
+    Req_m: float,
+    length_m: float,
+    axis_i: float | None = None,
+    axis_j: float | None = None,
+    radius_pixels: float | None = None,
+) -> float:
+    """Old Ez-only peak-electric-energy proxy: 0.5 eps0 integral Ez^2 dV.
+
+    This is retained only as a diagnostic. It is not the CST stored energy.
+    """
+    Ez = np.nan_to_num(np.asarray(Ez, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+    if Ez.ndim != 3:
+        raise ValueError(f"Ez must be a 3D array, got shape {Ez.shape}.")
+    dx, dy, dz, mask_xy, *_ = _field_spacing_and_mask(
+        Ez.shape,
+        Req_m=Req_m,
+        length_m=length_m,
+        axis_i=axis_i,
+        axis_j=axis_j,
+        radius_pixels=radius_pixels,
+    )
+    return float(0.5 * EPS0 * np.sum(Ez * Ez * mask_xy[:, :, None]) * dx * dy * dz)
+
+
+def stored_energy_from_Etotal_CST_equivalent(
+    Ex: np.ndarray,
+    Ey: np.ndarray,
+    Ez: np.ndarray,
+    *,
+    Req_m: float,
+    length_m: float,
+    axis_i: float | None = None,
+    axis_j: float | None = None,
+    radius_pixels: float | None = None,
+) -> dict[str, float]:
+    """CST-equivalent stored energy using the electric field components.
+
+    CST eigenmode stored energy is the total time-averaged electromagnetic
+    stored energy,
+
+        U_CST = 1/4 integral (eps |E|^2 + mu |H|^2) dV.
+
+    For a lossless resonant eigenmode, the time-averaged electric and magnetic
+    energies are equal, so this can be computed from the electric field alone as
+
+        U_CST = 2 U_E,time = 0.5 eps0 integral |E|^2 dV,
+
+    provided Ex,Ey,Ez are the peak/phasor electric-field amplitudes in the same
+    normalisation.
+
+    The returned dictionary also includes diagnostic electric-only components.
+    """
+    Ex = np.nan_to_num(np.asarray(Ex, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+    Ey = np.nan_to_num(np.asarray(Ey, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+    Ez = np.nan_to_num(np.asarray(Ez, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+    if Ex.shape != Ey.shape or Ex.shape != Ez.shape or Ex.ndim != 3:
+        raise ValueError(f"Ex, Ey, Ez must be matching 3D arrays; got {Ex.shape}, {Ey.shape}, {Ez.shape}.")
+
+    dx, dy, dz, mask_xy, axis_i, axis_j, radius_pixels = _field_spacing_and_mask(
+        Ez.shape,
+        Req_m=Req_m,
+        length_m=length_m,
+        axis_i=axis_i,
+        axis_j=axis_j,
+        radius_pixels=radius_pixels,
+    )
+    dV = dx * dy * dz
+    mask = mask_xy[:, :, None]
+
+    int_Ex2 = float(np.sum(Ex * Ex * mask) * dV)
+    int_Ey2 = float(np.sum(Ey * Ey * mask) * dV)
+    int_Ez2 = float(np.sum(Ez * Ez * mask) * dV)
+    int_Etot2 = int_Ex2 + int_Ey2 + int_Ez2
+
+    U_E_time = 0.25 * EPS0 * int_Etot2
+    U_CST = 2.0 * U_E_time
+
+    if not np.isfinite(U_CST) or U_CST <= 0.0:
+        raise ValueError(f"Calculated non-positive CST-equivalent stored energy U={U_CST!r}.")
+
+    return {
+        "U_CST_J": float(U_CST),
+        "U_Etotal_time_average_J": float(U_E_time),
+        "U_Etotal_peak_J": float(0.5 * EPS0 * int_Etot2),
+        "U_Ez_only_time_average_J": float(0.25 * EPS0 * int_Ez2),
+        "U_Ez_only_peak_J": float(0.5 * EPS0 * int_Ez2),
+        "int_Ex2_dV": int_Ex2,
+        "int_Ey2_dV": int_Ey2,
+        "int_Ez2_dV": int_Ez2,
+        "int_Etotal2_dV": int_Etot2,
+        "dx_m": float(dx),
+        "dy_m": float(dy),
+        "dz_m": float(dz),
+        "axis_i": float(axis_i),
+        "axis_j": float(axis_j),
+        "radius_pixels": float(radius_pixels),
+    }
+
+
+def stored_energy_from_components(
+    Ex: np.ndarray,
+    Ey: np.ndarray,
+    Ez: np.ndarray,
+    *,
+    Req_m: float,
+    length_m: float,
+    axis_i: float | None = None,
+    axis_j: float | None = None,
+    radius_pixels: float | None = None,
+) -> float:
+    """Return CST-equivalent total time-averaged stored energy in joules.
+
+    This replaces the previous Ez-only proxy. It uses Ex,Ey,Ez and assumes a
+    lossless eigenmode so that U_CST = 2 U_E,time.
+    """
+    return stored_energy_from_Etotal_CST_equivalent(
+        Ex, Ey, Ez,
+        Req_m=Req_m,
+        length_m=length_m,
+        axis_i=axis_i,
+        axis_j=axis_j,
+        radius_pixels=radius_pixels,
+    )["U_CST_J"]
+
+
+def stored_energy_from_field_data(
+    field_data: dict[str, np.ndarray],
+    name: str,
+    *,
+    Req_m: float,
+    length_m: float,
+    axis_i: float | None = None,
+    axis_j: float | None = None,
+    radius_pixels: float | None = None,
+    return_diagnostics: bool = False,
+) -> float | dict[str, float]:
+    """CST-equivalent stored energy for E1, E2, plus, or minus.
+
+    Uses all three electric components and returns the total time-averaged
+    electromagnetic stored energy equivalent to CST's eigenmode stored energy:
+    U_CST = 0.5 eps0 integral |E|^2 dV for lossless resonant fields.
+    """
+    if name == "E1":
+        keys = ("E1_Ex", "E1_Ey", "E1_Ez")
+    elif name == "E2":
+        keys = ("E2_Ex", "E2_Ey", "E2_Ez")
+    elif name == "plus":
+        keys = ("Ex_plus", "Ey_plus", "Ez_plus")
+    elif name == "minus":
+        keys = ("Ex_minus", "Ey_minus", "Ez_minus")
+    else:
+        raise ValueError(f"Unknown field name {name!r}; expected E1, E2, plus or minus.")
+
+    diag = stored_energy_from_Etotal_CST_equivalent(
+        field_data[keys[0]],
+        field_data[keys[1]],
+        field_data[keys[2]],
+        Req_m=Req_m,
+        length_m=length_m,
+        axis_i=axis_i,
+        axis_j=axis_j,
+        radius_pixels=radius_pixels,
+    )
+    return diag if return_diagnostics else diag["U_CST_J"]
 
 def Vz_loss_from_field(
     field_or_path: np.ndarray | str | Path,
@@ -483,15 +701,17 @@ def Vz_loss_from_field(
     *,
     f_mnp: float,
     length_m: float,
+    U_J: float,
     beta: float = 1.0,
     axis: tuple[int | None, int | None, slice] | None = None,
     centre_z: bool = False,
-) -> tuple[float, float]:
+) -> tuple[complex, float]:
     """
-    Calculate on-axis Vz and loss from a 3D Ez field or a saved .npy file.
+    Calculate complex on-axis Vz and U-normalised k_parallel from a 3D Ez field.
 
-    This replaces the old hard-coded [75, 75, :] indexing. The default uses the
-    central x,y pixels of whatever grid is supplied.
+    This deliberately uses only Ez(0,0,z), not a transverse polynomial fit.
+    The default axis is the central x,y pixel of the supplied grid, e.g.
+    array[75, 75, :] for a 151^3 field map.
     """
     if isinstance(field_or_path, np.ndarray):
         Ez = np.asarray(field_or_path)
@@ -503,6 +723,7 @@ def Vz_loss_from_field(
 
     if Ez.ndim != 3:
         raise ValueError(f"Expected a 3D Ez array, got shape {Ez.shape}.")
+
     x_mid, y_mid = Ez.shape[0] // 2, Ez.shape[1] // 2
     if axis is None:
         Ez_axis = Ez[x_mid, y_mid, :]
@@ -511,9 +732,14 @@ def Vz_loss_from_field(
         iy = y_mid if axis[1] is None else axis[1]
         Ez_axis = Ez[ix, iy, axis[2]]
 
-    Vz = accelerating_voltage_from_real_Ez(Ez_axis, length_m=length_m, frequency_Hz=f_mnp, beta=beta, centre_z=centre_z)
-    return Vz, loss_from_Vz(Vz)
-
+    Vz = accelerating_voltage_from_real_Ez(
+        Ez_axis,
+        length_m=length_m,
+        frequency_Hz=f_mnp,
+        beta=beta,
+        centre_z=centre_z,
+    )
+    return Vz, loss_from_Vz(Vz, U_J)
 
 def analyse_crossing(
     all_data: dict[str, Any],
@@ -538,6 +764,14 @@ def analyse_crossing(
 
     design_length_m = float(all_data["meta"]["design_length_m"])
     mixed_length_m = design_length_m * float(crossing["length_factor"])
+    Req_m = float(all_data["meta"]["pillbox_radius_m"])
+    # Match Method-2 convention for 151^3 maps: axis is array[75,75,:]
+    # and the cylinder radius is 75 pixels from the axis.  The fallbacks also
+    # work for other odd grid sizes.
+    voxel_res = int(all_data.get("meta", {}).get("voxel_res", field_data["E1_Ez"].shape[0]))
+    axis_i = float((voxel_res - 1) // 2)
+    axis_j = float((voxel_res - 1) // 2)
+    radius_pixels = axis_i
 
     analyses = {
         "E1": {
@@ -555,9 +789,55 @@ def analyse_crossing(
     }
 
     for name, item in analyses.items():
-        Vz, loss = Vz_loss_from_field(field_data[item["Ez_key"]], f_mnp=item["frequency_Hz"], length_m=item["length_m"])
-        item["Vz_V"] = Vz
-        item["loss"] = loss
+        energy_diag = stored_energy_from_field_data(
+            field_data,
+            name,
+            Req_m=Req_m,
+            length_m=item["length_m"],
+            axis_i=axis_i,
+            axis_j=axis_j,
+            radius_pixels=radius_pixels,
+            return_diagnostics=True,
+        )
+        U_J = float(energy_diag["U_CST_J"])
+        Vz, k_parallel = Vz_loss_from_field(
+            field_data[item["Ez_key"]],
+            f_mnp=item["frequency_Hz"],
+            length_m=item["length_m"],
+            U_J=U_J,
+        )
+
+        print(f"\n{mnp_i = }")
+        print(f"{mnp_j = }")
+        print(f'{float(all_data[fam_i][mnp_i]["design_frequency_Hz"]) = }')
+        print(f'{float(all_data[fam_j][mnp_j]["design_frequency_Hz"]) = }')
+        print(f'{float(crossing["frequency_Hz"]) = }')
+        print(f"{design_length_m = }")
+        print(f"{name = }")
+        print(f"{U_J = }  # U_CST = 0.5 eps0 integral |E|^2 dV")
+        print(f"U_Etotal_time_average_J = {energy_diag['U_Etotal_time_average_J']}")
+        print(f"U_Ez_only_peak_J = {energy_diag['U_Ez_only_peak_J']}")
+        print(f"{Vz = }")
+        print(f"{k_parallel = }")
+        print(f"{k_parallel * PC = }\n")
+
+
+        item["U_J"] = U_J
+        item["U_CST_J"] = U_J
+        item["stored_energy_diagnostics"] = energy_diag
+        item["Vz_complex_V"] = Vz
+        item["Vz_abs_V"] = float(abs(Vz))
+        item["k_parallel_V_per_C"] = k_parallel
+        item["k_parallel_V_per_pC"] = k_parallel * PC
+        # Backwards-compatible aliases.  Use V/pC here because older tables
+        # labelled this quantity as V/pC/m-like rather than V/C.
+        item["Vz_V"] = float(abs(Vz))
+        item["loss"] = k_parallel * PC
+        item["loss_V_per_pC"] = k_parallel * PC
+        item["normalisation"] = "CST-equivalent total time-averaged U; k_parallel=|Vz|^2/(4U_CST)"
+        item["axis_i"] = axis_i
+        item["axis_j"] = axis_j
+        item["radius_pixels"] = radius_pixels
 
     summary_pdf = None
 
@@ -584,6 +864,8 @@ def analyse_crossing(
             "design": design_length_m,
             "mixed": mixed_length_m,
         },
+        "pillbox_radius_m": Req_m,
+        "stored_energy_convention": "CST-equivalent total time-averaged U = 0.5 eps0 integral |E|^2 dV (electric-field-only equivalent for lossless eigenmodes)",
         "analysis": analyses,
         "files": {
             "slice_dict": str(out_dir / "slice_dict.pkl"),

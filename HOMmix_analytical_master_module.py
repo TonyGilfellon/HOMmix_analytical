@@ -792,7 +792,141 @@ def plot_crossing_population_heatmap(
 
     return counts, categories, all_crossings
 
+def plot_crossing_population_heatmap_TM(
+    crossing_results: dict,
+    savepath: str,
+    savename: str,
+    *,
+    m_values=(0, 1, 2),
+    include_families=("TM",),
+    inspect: bool = False,
+    dpi: int = 300,
+):
+    """
+    TM-TM category heatmap of crossing populations.
 
+    Plots only:
+        TM0np, TM1np, TM2np
+
+    Data is displayed in the lower-left triangle, including diagonal.
+    """
+
+    include_families = ("TM",)
+
+    categories = [f"TM{m}np" for m in m_values]
+    cat_index = {c: i for i, c in enumerate(categories)}
+    N = len(categories)
+
+    counts = np.zeros((N, N), dtype=int)
+
+    def parse_mode_tag(tag: str):
+        fam, mnp = tag.split("_", 1)
+        fam = fam.upper()
+        s = str(mnp)
+
+        if len(s) < 2:
+            raise ValueError(f"Invalid mnp key in tag: {tag!r}")
+
+        m = int(s[0])
+        n = int(s[1])
+        p = int(s[2:]) if len(s) > 2 else 0
+        return fam, m, n, p, s
+
+    def to_category(m: int):
+        return f"TM{m}np"
+
+    # Only collect TM-TM crossings
+    all_crossings = []
+    if "TM" in crossing_results and "crossings" in crossing_results["TM"]:
+        all_crossings.extend(crossing_results["TM"]["crossings"].values())
+
+    for c in all_crossings:
+        mi = c.get("mode_i")
+        mj = c.get("mode_j")
+        if not mi or not mj:
+            continue
+
+        fam_i, m_i, *_ = parse_mode_tag(mi)
+        fam_j, m_j, *_ = parse_mode_tag(mj)
+
+        # Strictly TM-TM only
+        if fam_i != "TM" or fam_j != "TM":
+            continue
+
+        if m_i not in m_values or m_j not in m_values:
+            continue
+
+        ci = to_category(m_i)
+        cj = to_category(m_j)
+
+        i = cat_index[ci]
+        j = cat_index[cj]
+
+        # Force lower-left half
+        if i < j:
+            i, j = j, i
+
+        counts[i, j] += 1
+
+    # Mask upper-right triangle
+    mask = np.triu(np.ones_like(counts, dtype=bool), k=1)
+    heat = counts.astype(float)
+    heat[mask] = np.nan
+
+    fig, ax = plt.subplots(figsize=(5.2, 4.6))
+    im = ax.imshow(heat, aspect="equal")
+
+    ax.set_xticks(np.arange(N))
+    ax.set_yticks(np.arange(N))
+    ax.set_xticklabels(categories, rotation=45, ha="right")
+    ax.set_yticklabels(categories)
+
+    ax.set_title("TM-TM crossing population by m category")
+    ax.set_xlabel("Category")
+    ax.set_ylabel("Category")
+
+    bbox_style = dict(
+        facecolor="white",
+        edgecolor="none",
+        alpha=0.65,
+        boxstyle="square,pad=0.25",
+    )
+
+    for i in range(N):
+        for j in range(N):
+            if np.isnan(heat[i, j]):
+                continue
+            ax.text(
+                j, i, str(counts[i, j]),
+                ha="center",
+                va="center",
+                fontsize=10,
+                color="black",
+                bbox=bbox_style,
+            )
+
+    ax.set_xticks(np.arange(-0.5, N, 1), minor=True)
+    ax.set_yticks(np.arange(-0.5, N, 1), minor=True)
+    ax.grid(which="minor", linewidth=0.6)
+    ax.tick_params(which="minor", bottom=False, left=False)
+
+    fig.colorbar(
+        im,
+        ax=ax,
+        fraction=0.046,
+        pad=0.04,
+        label="Crossing count",
+    )
+
+    fig.tight_layout()
+
+    if inspect:
+        plt.show()
+    else:
+        plt.savefig(f"{savepath}\\{savename}.png", dpi=dpi)
+        plt.close("all")
+
+    return counts, categories, all_crossings
 
 def plot_modes_from_all_data(
     all_data,

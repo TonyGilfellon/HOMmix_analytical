@@ -54,6 +54,21 @@ def abs_finite_or_nan(x: object) -> float:
     return float(y) if math.isfinite(float(y)) else float("nan")
 
 
+
+def signed_real_finite_or_nan(x: object) -> float:
+    """Return the real part with sign preserved, or nan.
+
+    The diagnostic script saves U_CST-normalised K entries as real signed
+    values.  This helper also tolerates complex fallbacks by taking their real
+    part rather than their magnitude.
+    """
+    try:
+        y = complex(x).real
+    except Exception:
+        return float("nan")
+    return float(y) if math.isfinite(float(y)) else float("nan")
+
+
 def safe_ratio(num: float, den: float) -> float:
     num = finite_or_nan(num)
     den = finite_or_nan(den)
@@ -115,32 +130,48 @@ def first_present(d: dict[str, Any], keys: tuple[str, ...]) -> Any:
 # -----------------------------------------------------------------------------
 # Effect extraction, matching heterotypic_prab_loss_kick_quad_tables.py
 # -----------------------------------------------------------------------------
-
 EFFECT_ROWS = [
     {
         "key": "loss",
-        "label": r"$k_{\parallel}^{(1)}$",
+        "label": r"$k_{\parallel}$",
         "units": r"$\mathrm{V/pC/m}$",
+        "signed": False,
     },
     {
         "key": "kick",
-        "label": r"$k_{\perp}^{(2)}$",
+        "label": r"$k_{\perp}$",
         "units": r"$\mathrm{V/pC/m^2}$",
+        "signed": False,
+    },
+    {
+        "key": "K_iso",
+        "label": r"$K_{\mathrm{iso}}$",
+        "units": r"$\mathrm{V/pC/m^3}$",
+        "signed": True,
+    },
+    {
+        "key": "K_Q",
+        "label": r"$K_Q$",
+        "units": r"$\mathrm{V/pC/m^3}$",
+        "signed": False,
     },
     {
         "key": "focusing",
-        "label": r"$K_{xx}^{(3)}$",
+        "label": r"$K_{xx}$",
         "units": r"$\mathrm{V/pC/m^3}$",
+        "signed": True,
     },
     {
         "key": "defocusing",
-        "label": r"$K_{yy}^{(3)}$",
+        "label": r"$K_{yy}$",
         "units": r"$\mathrm{V/pC/m^3}$",
+        "signed": True,
     },
     {
         "key": "skew",
-        "label": r"$K_{xy}^{(3)}$",
+        "label": r"$K_{xy}$",
         "units": r"$\mathrm{V/pC/m^3}$",
+        "signed": True,
     },
 ]
 
@@ -153,17 +184,27 @@ def figures(field_result: dict[str, Any]) -> dict[str, Any]:
     return field_result.get("figures_of_merit", {})
 
 
+def _kdiag_value(field_result: dict[str, Any], diag_key: str, value_key: str) -> float:
+    try:
+        return finite_or_nan(field_result.get("kparallel_diagnostics", {}).get(diag_key, {}).get(value_key))
+    except Exception:
+        return float("nan")
+
+
 def loss_v_per_pc_per_m(field_result: dict[str, Any]) -> float:
+    # Preferred: explicit U_CST-normalised value written by the diagnostic script.
     f = figures(field_result)
-    loss_v_per_pc = finite_or_nan(
-        first_present(
-            f,
-            (
-                "loss_like_V_per_pC",
-                "loss_like_V2_per_C2",
-            ),
-        )
-    )
+    direct = finite_or_nan(f.get("loss_like_V_per_pC_per_m"))
+    if math.isfinite(direct):
+        return abs(direct)
+
+    # Fallback: U_CST k_parallel diagnostic from the fitted V0.
+    direct = _kdiag_value(field_result, "fit_V0_U_CST", "k_V_per_pC_per_m")
+    if math.isfinite(direct):
+        return abs(direct)
+
+    # Last-resort fallback: U_CST-normalised V/pC divided by length.
+    loss_v_per_pc = finite_or_nan(f.get("loss_like_V_per_pC"))
     length_m = field_length_m(field_result)
     if not math.isfinite(loss_v_per_pc) or not math.isfinite(length_m) or length_m <= 0.0:
         return float("nan")
@@ -171,6 +212,7 @@ def loss_v_per_pc_per_m(field_result: dict[str, Any]) -> float:
 
 
 def kick_v_per_pc_per_m2(field_result: dict[str, Any]) -> float:
+    # Preferred: U_CST-normalised dipole kick factor |V_perp|^2/(4U_CST).
     f = figures(field_result)
     return abs_finite_or_nan(
         first_present(
@@ -178,7 +220,6 @@ def kick_v_per_pc_per_m2(field_result: dict[str, Any]) -> float:
             (
                 "kick_magnitude_V_per_pC_per_m2",
                 "kick_mag_V_per_pC_per_m2",
-                "kick_magnitude_V_per_C_per_m",
             ),
         )
     )
@@ -186,12 +227,12 @@ def kick_v_per_pc_per_m2(field_result: dict[str, Any]) -> float:
 
 def Kxx_v_per_pc_per_m3(field_result: dict[str, Any]) -> float:
     f = figures(field_result)
-    return abs_finite_or_nan(
+    return signed_real_finite_or_nan(
         first_present(
             f,
             (
                 "Kxx_V_per_pC_per_m3",
-                "Kxx_V_per_C_per_m_per_m",
+                "Kxx_U_CST_V_per_pC_per_m3",
             ),
         )
     )
@@ -199,12 +240,12 @@ def Kxx_v_per_pc_per_m3(field_result: dict[str, Any]) -> float:
 
 def Kyy_v_per_pc_per_m3(field_result: dict[str, Any]) -> float:
     f = figures(field_result)
-    return abs_finite_or_nan(
+    return signed_real_finite_or_nan(
         first_present(
             f,
             (
                 "Kyy_V_per_pC_per_m3",
-                "Kyy_V_per_C_per_m_per_m",
+                "Kyy_U_CST_V_per_pC_per_m3",
             ),
         )
     )
@@ -212,22 +253,46 @@ def Kyy_v_per_pc_per_m3(field_result: dict[str, Any]) -> float:
 
 def Kxy_v_per_pc_per_m3(field_result: dict[str, Any]) -> float:
     f = figures(field_result)
-    return abs_finite_or_nan(
+    return signed_real_finite_or_nan(
         first_present(
             f,
             (
                 "Kxy_V_per_pC_per_m3",
-                "Kxy_V_per_C_per_m_per_m",
+                "Kxy_U_CST_V_per_pC_per_m3",
             ),
         )
     )
+
+
+def Kiso_v_per_pc_per_m3(field_result: dict[str, Any]) -> float:
+    Kxx = Kxx_v_per_pc_per_m3(field_result)
+    Kyy = Kyy_v_per_pc_per_m3(field_result)
+    if not math.isfinite(Kxx) or not math.isfinite(Kyy):
+        return float("nan")
+    return 0.5 * (Kxx + Kyy)
+
+
+def KQ_v_per_pc_per_m3(field_result: dict[str, Any]) -> float:
+    Kxx = Kxx_v_per_pc_per_m3(field_result)
+    Kyy = Kyy_v_per_pc_per_m3(field_result)
+    Kxy = Kxy_v_per_pc_per_m3(field_result)
+    if not all(math.isfinite(v) for v in (Kxx, Kyy, Kxy)):
+        return float("nan")
+    return math.sqrt((Kxx - Kyy) ** 2 + 4.0 * Kxy ** 2)
 
 
 def effect_value(field_result: dict[str, Any], effect_key: str) -> float:
     if effect_key == "loss":
         return loss_v_per_pc_per_m(field_result)
     if effect_key == "kick":
+        # k_perp is a magnitude by definition in the current diagnostic output.
+        # A physically signed dipole row would need a chosen transverse axis,
+        # e.g. k_x or k_y, not |k_perp|.
         return kick_v_per_pc_per_m2(field_result)
+    if effect_key == "K_iso":
+        return Kiso_v_per_pc_per_m3(field_result)
+    if effect_key == "K_Q":
+        return KQ_v_per_pc_per_m3(field_result)
     if effect_key == "focusing":
         return Kxx_v_per_pc_per_m3(field_result)
     if effect_key == "defocusing":
@@ -242,8 +307,10 @@ def effect_row(result: dict[str, Any], effect_key: str) -> dict[str, float]:
     for name in ("E1", "E2", "plus", "minus"):
         vals[name] = effect_value(result["fields"][name], effect_key)
 
-    parent_max = max(vals["E1"], vals["E2"])
-    mixed_max = max(vals["plus"], vals["minus"])
+    # R_max is a size/enhancement metric, so compare magnitudes even for
+    # signed rows such as K_iso, Kxx, Kyy and Kxy.
+    parent_max = max(abs(vals["E1"]), abs(vals["E2"]))
+    mixed_max = max(abs(vals["plus"]), abs(vals["minus"]))
 
     vals["parent_max"] = parent_max
     vals["mixed_max"] = mixed_max
@@ -372,6 +439,8 @@ def appendix_ii_start() -> str:
 
 \lipsum[1-2]
 
+In the tables below, only the figures of merit relevant to the crossing type are shown: monopole--dipole pages retain $k_{\parallel}$ and $k_{\perp}$ only; monopole--quadrupole pages omit $k_{\perp}$; and dipole--quadrupole pages omit $k_{\parallel}$. The quantities $K_{xx}$, $K_{yy}$, $K_{xy}$ and $K_{\mathrm{iso}}=(K_{xx}+K_{yy})/2$ retain their phase-aligned signs. The scalar quantities $k_{\parallel}$, $k_{\perp}$ and $K_Q=\sqrt{(K_{xx}-K_{yy})^2+4K_{xy}^2}$ are reported as magnitudes.
+
 \clearpage
 """.strip()
 
@@ -382,19 +451,68 @@ def appendix_ii_end() -> str:
 """.strip()
 
 
+
+
+def pair_type_key(result: dict[str, Any]) -> str:
+    """Return normalised heterotypic pair type from result metadata/path."""
+    c = result.get("crossing", {})
+    pt = result.get("pair_type") or c.get("pair_type")
+    if pt is None and result.get("crossing_folder"):
+        pt = Path(result["crossing_folder"]).parent.name
+    return str(pt or "heterotypic").lower().replace("-", "_")
+
+
+def effect_rows_for_crossing(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Select only physically relevant rows for the heterotypic pair.
+
+    Compact appendix policy:
+      * monopole--dipole: keep k_parallel and k_perp only; discard all K rows.
+      * monopole--quadrupole: discard k_perp; keep k_parallel and K rows.
+      * dipole--quadrupole: discard k_parallel; keep k_perp and K rows.
+
+    K rows include signed K_iso, unsigned K_Q, and signed Kxx/Kyy/Kxy so the
+    isotropic monopole-like curvature and quadrupole-like anisotropy remain
+    distinguishable.
+    """
+    pt = pair_type_key(result)
+    rows = []
+    for row in EFFECT_ROWS:
+        key = row["key"]
+        if pt == "monopole_dipole" and key in {"K_iso", "K_Q", "focusing", "defocusing", "skew"}:
+            continue
+        if pt == "monopole_quadrupole" and key == "kick":
+            continue
+        if pt == "dipole_quadrupole" and key == "loss":
+            continue
+        rows.append(row)
+    return rows
+
+
+def figure_size_for_crossing(result: dict[str, Any], default_width: str, default_height: str) -> tuple[str, str]:
+    """Use a smaller figure on quadrupole-containing pages so table+figure fit."""
+    pt = pair_type_key(result)
+    if pt in {"monopole_quadrupole", "dipole_quadrupole"}:
+        return "0.44\\textwidth", "0.62\\textheight"
+    if pt == "monopole_dipole":
+        return "0.54\\textwidth", "0.70\\textheight"
+    return default_width, default_height
+
+
 def latex_table_for_crossing(result: dict[str, Any]) -> str:
     lines = []
     lines.append(r"\begin{center}")
-    lines.append(r"\small")
-    lines.append(r"\renewcommand{\arraystretch}{1.18}")
-    lines.append(r"\setlength{\tabcolsep}{4.5pt}")
+    lines.append(r"\footnotesize")
+    lines.append(r"\renewcommand{\arraystretch}{1.08}")
+    lines.append(r"\setlength{\tabcolsep}{3.6pt}")
     lines.append(rf"\textbf{{{crossing_short_title(result)}}}\\[0.15em]")
     lines.append(r"\begin{ruledtabular}")
     lines.append(r"\begin{tabular}{ccccccc}")
-    lines.append(r"Effect & Units & $E_1$ & $E_2$ & $E_+$ & $E_-$ & $R_{\max}$ \\")
+    lines.append(
+        r"Beam-dynamics metric & Units & $E_1$ & $E_2$ & $E_+$ & $E_-$ & $R_{\max}$ \\"
+    )
     lines.append(r"\hline")
 
-    for info in EFFECT_ROWS:
+    for info in effect_rows_for_crossing(result):
         row = effect_row(result, info["key"])
         cells = [
             info["label"],
@@ -417,23 +535,26 @@ def latex_table_for_crossing(result: dict[str, Any]) -> str:
 def single_crossing_summary_figure(
     result: dict[str, Any],
     *,
-    image_width: str = "0.58\\textwidth",
+    image_width: str = "0.50\\textwidth",
+    image_height: str = "0.66\\textheight",
     figs_dir_latex: str = "figs",
 ) -> str:
     pdf_path = heterotypic_prab_summary_pdf_path(result, figs_dir_latex=figs_dir_latex)
+    width, height = figure_size_for_crossing(result, image_width, image_height)
     return rf"""
-\vspace{{-1.1em}}
+\vspace{{-0.8em}}
 \begin{{center}}
-\includegraphics[width={image_width}]{{{pdf_path}}}
+\includegraphics[width={width},height={height},keepaspectratio]{{{pdf_path}}}
 \end{{center}}
-\vspace{{-0.7em}}
+\vspace{{-0.6em}}
 """.strip()
 
 
 def single_crossing_page(
     result: dict[str, Any],
     *,
-    image_width: str = "0.58\\textwidth",
+    image_width: str = "0.50\\textwidth",
+    image_height: str = "0.66\\textheight",
     figs_dir_latex: str = "figs",
     clearpage: bool = True,
 ) -> str:
@@ -443,6 +564,7 @@ def single_crossing_page(
         + single_crossing_summary_figure(
             result,
             image_width=image_width,
+            image_height=image_height,
             figs_dir_latex=figs_dir_latex,
         )
     )
@@ -471,7 +593,8 @@ def write_tm_heterotypic_appendix(
     out_tex: str | Path = DEFAULT_OUT_TEX,
     figs_dest_dir: str | Path = DEFAULT_FIGS_DIR,
     figs_dir_latex: str = "figs",
-    image_width: str = "0.58\\textwidth",
+    image_width: str = "0.50\\textwidth",
+    image_height: str = "0.66\\textheight",
     copy_figures: bool = True,
     top_n: int | None = None,
 ) -> Path:
@@ -488,6 +611,7 @@ def write_tm_heterotypic_appendix(
         single_crossing_page(
             result=result,
             image_width=image_width,
+            image_height=image_height,
             figs_dir_latex=figs_dir_latex,
             clearpage=True,
         )
@@ -515,7 +639,8 @@ if __name__ == "__main__":
         out_tex=DEFAULT_OUT_TEX,
         figs_dest_dir=DEFAULT_FIGS_DIR,
         figs_dir_latex="figs",
-        image_width="0.58\\textwidth",
+        image_width="0.50\\textwidth",
+        image_height="0.66\\textheight",
         copy_figures=True,
         top_n=None,
     )

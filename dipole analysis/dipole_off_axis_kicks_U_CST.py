@@ -7,7 +7,7 @@ from __future__ import annotations
 from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
-import HOMmix_analytical_master_module_dipole as hamm
+import HOMmix_analytical_master_module_dipole_U_CST as hamm
 
 
 def assemble_all_dipole_data_dict(
@@ -535,6 +535,54 @@ def save_four_slice_pdfs_and_merge(
     print(f"Wrote single-page summary PDF {out_file}")
     return out_file
 
+
+def write_crossing_kick_summary_txt(analysis: dict, filename: str | Path) -> None:
+    """Write a compact crossing-level text diagnostic for the U_CST kick analysis."""
+    lines = []
+    lines.append(f"Dipole crossing: TM{analysis['mode_i']} -- TM{analysis['mode_j']}")
+    lines.append(f"crossing_key = {analysis['crossing_key']}")
+    lines.append(f"ell = {analysis['crossing']['length_factor']:.12e}")
+    lines.append(f"f_cross_Hz = {analysis['crossing']['frequency_Hz']:.12e}")
+    lines.append("")
+    lines.append("NORMALISATION")
+    lines.append("  U_CST = 0.5 eps0 integral |E|^2 dV")
+    lines.append("  k_perp = |(c/omega) dVz/dr|^2/(4 U_CST)")
+    lines.append("  primary units = V/pC/m/m")
+    lines.append("  voltage phase convention: centred_z=False, z in [0,L]")
+    lines.append("")
+    lines.append("ROTATIONS")
+    lines.append(f"  TM{analysis['mode_i']} rotation = {analysis['rotation_i']}")
+    lines.append(f"  TM{analysis['mode_j']} rotation = {analysis['rotation_j']}")
+    lines.append("")
+    lines.append("FIELD RESULTS")
+    for name in ("E1", "E2", "plus", "minus"):
+        k = analysis["kicks"][name]
+        e = k.get("energy_diagnostics", {})
+        lines.append(f"{name} ({k.get('mode', name)}):")
+        lines.append(f"  frequency_source             = {k.get('frequency_source')}")
+        lines.append(f"  frequency_Hz                 = {k['f_mnp_Hz']:.12e}")
+        lines.append(f"  length_factor                = {k.get('length_factor')}")
+        lines.append(f"  U_CST_J                      = {k['U_CST_J']:.12e}")
+        if e:
+            lines.append(f"  int_Etotal2_dV               = {e['int_Etotal2_dV']:.12e}")
+            lines.append(f"  int_Ez2_dV                   = {e['int_Ez2_dV']:.12e}")
+            lines.append(f"  U_Etotal_time_average_J      = {e['U_Etotal_time_average_J']:.12e}")
+            lines.append(f"  U_Ez_only_peak_J             = {e['U_Ez_only_peak_J']:.12e}")
+        lines.append(f"  dVz_dr                       = {k['dVz_dr_V_per_m'].real:.12e}{k['dVz_dr_V_per_m'].imag:+.12e}j V/C/m")
+        lines.append(f"  raw PW kick                  = {k['kick_raw_V_per_C_per_m_per_m']:.12e} V/C/m/m")
+        lines.append(f"  U_CST PW kick                = {k['kick_V_per_C_per_m_per_m']:.12e} V/C/m/m")
+        lines.append(f"  U_CST PW kick                = {k['kick_V_per_pC_per_m_per_m']:.12e} V/pC/m/m")
+        offset = k['kick_loss_equiv_V_per_pC_per_m_per_m']
+        if np.any(np.isfinite(offset)):
+            lines.append(f"  median offset-equivalent     = {np.nanmedian(offset):.12e} V/pC/m/m")
+        lines.append(f"  transverse_pixel_m           = {k['transverse_pixel_m']:.12e}")
+        lines.append(f"  longitudinal_pixel_m         = {k['longitudinal_pixel_m']:.12e}")
+        lines.append("")
+
+    filename = Path(filename)
+    filename.parent.mkdir(parents=True, exist_ok=True)
+    filename.write_text("\n".join(lines))
+
 def analyse_crossing(
     key: str,
     crossing: dict,
@@ -617,42 +665,64 @@ def analyse_crossing(
     Req_m = hamm.pillbox_radius_from_freq(f_010)
 
     kick_jobs = {
-        "E1": (
-            field_data["E1_Ez"],
-            data_dict["TM"][mode_i]["design_frequency_Hz"],
-            1.0,
-        ),
-        "E2": (
-            field_data["E2_Ez"],
-            data_dict["TM"][mode_j]["design_frequency_Hz"],
-            1.0,
-        ),
-        "plus": (
-            field_data["Ez_plus"],
-            f_cross,
-            lf_cross,
-        ),
-        "minus": (
-            field_data["Ez_minus"],
-            f_cross,
-            lf_cross,
-        ),
+        "E1": {
+            "Ex": field_data["E1_Ex"],
+            "Ey": field_data["E1_Ey"],
+            "Ez": field_data["E1_Ez"],
+            "frequency_Hz": data_dict["TM"][mode_i]["design_frequency_Hz"],
+            "frequency_source": "parent_design_frequency",
+            "length_factor": 1.0,
+            "mode": f"TM{mode_i}",
+        },
+        "E2": {
+            "Ex": field_data["E2_Ex"],
+            "Ey": field_data["E2_Ey"],
+            "Ez": field_data["E2_Ez"],
+            "frequency_Hz": data_dict["TM"][mode_j]["design_frequency_Hz"],
+            "frequency_source": "parent_design_frequency",
+            "length_factor": 1.0,
+            "mode": f"TM{mode_j}",
+        },
+        "plus": {
+            "Ex": field_data["Ex_plus"],
+            "Ey": field_data["Ey_plus"],
+            "Ez": field_data["Ez_plus"],
+            "frequency_Hz": f_cross,
+            "frequency_source": "crossing_degenerate_frequency",
+            "length_factor": lf_cross,
+            "mode": "E+",
+        },
+        "minus": {
+            "Ex": field_data["Ex_minus"],
+            "Ey": field_data["Ey_minus"],
+            "Ez": field_data["Ez_minus"],
+            "frequency_Hz": f_cross,
+            "frequency_source": "crossing_degenerate_frequency",
+            "length_factor": lf_cross,
+            "mode": "E-",
+        },
     }
 
     kicks = {}
 
-    for name, (Ez, freq, lf) in kick_jobs.items():
+    for name, job in kick_jobs.items():
         kicks[name] = hamm.kick_from_Ez_field(
-            Ez,
+            job["Ex"],
+            job["Ey"],
+            job["Ez"],
             f_010=f_010,
-            f_mnp=freq,
-            l_factor=lf,
+            f_mnp=job["frequency_Hz"],
+            l_factor=job["length_factor"],
             Req_m=Req_m,
             axis="y",
             fit_pixels=8,
             save_directory=out_dir / "kick_diagnostics" / name,
             label=name,
+            centre_z=False,
         )
+        kicks[name]["mode"] = job["mode"]
+        kicks[name]["frequency_source"] = job["frequency_source"]
+        kicks[name]["length_factor"] = float(job["length_factor"])
 
     analysis = {
         "crossing_key": key,
@@ -671,7 +741,7 @@ def analyse_crossing(
             "peak_before": rot_j["peak_before"],
             "peak_after": rot_j["peak_after"],
         },
-        "kick_units": "V/C/m/m",
+        "kick_units": "V/pC/m/m; U_CST normalised",
         "kicks": kicks,
         "files": {
             "field_data_npz": str(out_dir / "field_data.npz"),
@@ -683,6 +753,8 @@ def analyse_crossing(
         },
     }
 
+    write_crossing_kick_summary_txt(analysis, out_dir / "dipole_kick_summary_U_CST.txt")
+
     hamm.pickle_save(analysis, out_dir / "crossing_analysis.pkl")
 
     print(f"\n{key}")
@@ -693,7 +765,7 @@ def analyse_crossing(
     for name, k in kicks.items():
         print(
             f"  {name:5s} kick = "
-            f"{k['kick_V_per_C_per_m_per_m']:.6e} V/C/m/m"
+            f"{k['kick_V_per_pC_per_m_per_m']:.6e} V/pC/m/m (U_CST); raw={k['kick_raw_V_per_C_per_m_per_m']:.6e} V/C/m/m"
         )
 
     return analysis

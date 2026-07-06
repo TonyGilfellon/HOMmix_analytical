@@ -18,6 +18,7 @@ from scipy.special import jn_zeros
 
 C0 = 299_792_458.0
 EPS0 = 8.854_187_8128e-12
+PC = 1.0e-12
 
 
 def pickle_save(obj, filename):
@@ -282,119 +283,322 @@ def extract_slices(field_data: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
 
 
 
-def accelerating_voltage_complex(Ez_line, z_m, omega, beta=1.0):
-    zc = np.asarray(z_m, float) - 0.5*(z_m[0] + z_m[-1])
+def accelerating_voltage_complex(Ez_line, z_m, omega, beta=1.0, *, centre_z: bool = False):
+    """Complex transit-time voltage using the shared convention z in [0,L].
+
+    centre_z=False matches the current monopole/heterotypic Method-2 convention:
+
+        Vz = integral_0^L Ez(z) exp(i omega z / beta c) dz.
+
+    centre_z=True is retained only as a diagnostic/legacy option.
+    """
+    z = np.asarray(z_m, float)
+    if centre_z:
+        z = z - 0.5 * (z[0] + z[-1])
     Ez_line = np.asarray(Ez_line, float)
-    return np.trapz(Ez_line * np.exp(1j*omega*zc/(beta*C0)), zc)
+    return np.trapezoid(Ez_line * np.exp(1j * omega * z / (beta * C0)), z)
+
+def _field_spacing_and_mask(
+    shape: tuple[int, int, int],
+    *,
+    Req_m: float,
+    length_m: float,
+    axis_i: float | None = None,
+    axis_j: float | None = None,
+    radius_pixels: float | None = None,
+) -> tuple[float, float, float, np.ndarray, float, float, float]:
+    """Return dx, dy, dz and the cylindrical transverse mask.
+
+    For the standard 151^3 maps, the beam/cylinder axis is array[75,75,:]
+    and radius_pixels=75, giving dx=dy=Req_m/75.
+    """
+    nx, ny, nz = shape
+    if axis_i is None:
+        axis_i = float(nx // 2)
+    if axis_j is None:
+        axis_j = float(ny // 2)
+    if radius_pixels is None:
+        radius_pixels = float(min(axis_i, axis_j, nx - 1 - axis_i, ny - 1 - axis_j))
+    if radius_pixels <= 0.0:
+        raise ValueError(f"radius_pixels must be positive, got {radius_pixels!r}")
+
+    dx = float(Req_m) / float(radius_pixels)
+    dy = dx
+    dz = float(length_m) / (nz - 1)
+
+    x = (np.arange(nx, dtype=float) - float(axis_i)) * dx
+    y = (np.arange(ny, dtype=float) - float(axis_j)) * dy
+    X, Y = np.meshgrid(x, y, indexing="ij")
+    mask_xy = (X * X + Y * Y) <= float(Req_m) * float(Req_m)
+    return dx, dy, dz, mask_xy, float(axis_i), float(axis_j), float(radius_pixels)
+
+
+def stored_energy_from_Etotal_CST_equivalent(
+    Ex: np.ndarray,
+    Ey: np.ndarray,
+    Ez: np.ndarray,
+    *,
+    Req_m: float,
+    length_m: float,
+    axis_i: float | None = None,
+    axis_j: float | None = None,
+    radius_pixels: float | None = None,
+) -> dict[str, float]:
+    """CST-equivalent stored energy from electric fields only.
+
+    CST eigenmode stored energy is total time-averaged EM energy.  With only the
+    analytical electric field available, use the lossless-resonator equivalence
+
+        U_CST = 2 U_E,time = 0.5 eps0 integral |E|^2 dV.
+
+    Diagnostics for older Ez-only/time-average conventions are also returned.
+    """
+    Ex = np.nan_to_num(np.asarray(Ex, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+    Ey = np.nan_to_num(np.asarray(Ey, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+    Ez = np.nan_to_num(np.asarray(Ez, dtype=float), nan=0.0, posinf=0.0, neginf=0.0)
+    if Ex.shape != Ey.shape or Ex.shape != Ez.shape or Ez.ndim != 3:
+        raise ValueError(f"Ex, Ey, Ez must be matching 3D arrays; got {Ex.shape}, {Ey.shape}, {Ez.shape}")
+
+    dx, dy, dz, mask_xy, axis_i, axis_j, radius_pixels = _field_spacing_and_mask(
+        Ez.shape,
+        Req_m=Req_m,
+        length_m=length_m,
+        axis_i=axis_i,
+        axis_j=axis_j,
+        radius_pixels=radius_pixels,
+    )
+    dV = dx * dy * dz
+    mask = mask_xy[:, :, None]
+
+    int_Ex2 = float(np.sum(Ex * Ex * mask) * dV)
+    int_Ey2 = float(np.sum(Ey * Ey * mask) * dV)
+    int_Ez2 = float(np.sum(Ez * Ez * mask) * dV)
+    int_Etotal2 = int_Ex2 + int_Ey2 + int_Ez2
+
+    U_E_time = 0.25 * EPS0 * int_Etotal2
+    U_CST = 2.0 * U_E_time
+    if not np.isfinite(U_CST) or U_CST <= 0.0:
+        raise ValueError(f"Calculated non-positive CST-equivalent stored energy U={U_CST!r}")
+
+    return {
+        "U_CST_J": float(U_CST),
+        "U_Etotal_time_average_J": float(U_E_time),
+        "U_Etotal_peak_J": float(0.5 * EPS0 * int_Etotal2),
+        "U_Ez_only_time_average_J": float(0.25 * EPS0 * int_Ez2),
+        "U_Ez_only_peak_J": float(0.5 * EPS0 * int_Ez2),
+        "int_Ex2_dV": int_Ex2,
+        "int_Ey2_dV": int_Ey2,
+        "int_Ez2_dV": int_Ez2,
+        "int_Etotal2_dV": int_Etotal2,
+        "dx_m": float(dx),
+        "dy_m": float(dy),
+        "dz_m": float(dz),
+        "axis_i": float(axis_i),
+        "axis_j": float(axis_j),
+        "radius_pixels": float(radius_pixels),
+    }
+
+
+def _write_kick_diagnostic_txt(
+    filename: str | Path,
+    *,
+    label: str,
+    axis: str,
+    frequency_Hz: float,
+    length_m: float,
+    beta: float,
+    fit_pixels: int,
+    r_m: np.ndarray,
+    Vc: np.ndarray,
+    dVz_dr: complex,
+    Vperp_per_m_offset: complex,
+    kick_raw_V_per_C_per_m2: float,
+    kick_U_norm_V_per_C_per_m2: float,
+    kick_U_norm_V_per_pC_per_m2: float,
+    kick_loss_equiv_U_norm: np.ndarray,
+    kick_loss_equiv_raw: np.ndarray,
+    energy: dict[str, float],
+    transverse_pixel_m: float,
+    longitudinal_pixel_m: float,
+    centre_z: bool,
+) -> None:
+    lines: list[str] = []
+    lines.append(f"{label}: dipole kick diagnostic")
+    lines.append("")
+    lines.append("CONVENTIONS")
+    lines.append(f"  axis                         = {axis}")
+    lines.append(f"  beta                         = {beta}")
+    lines.append(f"  fit_pixels                   = {fit_pixels}")
+    lines.append(f"  centred_z                    = {centre_z}  (False means z in [0,L])")
+    lines.append(f"  frequency_Hz                 = {frequency_Hz:.12e}")
+    lines.append(f"  length_m                     = {length_m:.12e}")
+    lines.append(f"  transverse_pixel_m           = {transverse_pixel_m:.12e}")
+    lines.append(f"  longitudinal_pixel_m         = {longitudinal_pixel_m:.12e}")
+    lines.append(f"  axis_indices_xy              = ({energy['axis_i']:.6g}, {energy['axis_j']:.6g})")
+    lines.append(f"  radius_pixels                = {energy['radius_pixels']:.6g}")
+    lines.append("")
+    lines.append("STORED ENERGY")
+    lines.append("  Primary normalisation uses U_CST = 0.5 eps0 integral |E|^2 dV")
+    for key in [
+        "int_Ex2_dV", "int_Ey2_dV", "int_Ez2_dV", "int_Etotal2_dV",
+        "U_Ez_only_time_average_J", "U_Ez_only_peak_J",
+        "U_Etotal_time_average_J", "U_Etotal_peak_J", "U_CST_J",
+    ]:
+        lines.append(f"  {key:30s}= {energy[key]:.12e}")
+    lines.append("")
+    lines.append("PW GRADIENT METHOD")
+    lines.append(f"  dVz_dr                       = {dVz_dr.real:.12e}{dVz_dr.imag:+.12e}j V/C/m")
+    lines.append(f"  |dVz_dr|                     = {abs(dVz_dr):.12e} V/C/m")
+    lines.append(f"  Vperp_per_m_offset           = {Vperp_per_m_offset.real:.12e}{Vperp_per_m_offset.imag:+.12e}j V/C/m")
+    lines.append(f"  raw |Vperp|/m                = {kick_raw_V_per_C_per_m2:.12e} V/C/m/m")
+    lines.append(f"  U-normalised                 = {kick_U_norm_V_per_C_per_m2:.12e} V/C/m/m")
+    lines.append(f"  U-normalised                 = {kick_U_norm_V_per_pC_per_m2:.12e} V/pC/m/m")
+    lines.append("")
+    lines.append("OFFSET METHOD")
+    lines.append("  k_perp(r) = |(c/omega) Vz(r)/r|^2/(4 U_CST)")
+    finite = np.isfinite(kick_loss_equiv_U_norm)
+    if np.any(finite):
+        lines.append(f"  median U-normalised          = {np.nanmedian(kick_loss_equiv_U_norm):.12e} V/C/m/m")
+        lines.append(f"  median U-normalised          = {np.nanmedian(kick_loss_equiv_U_norm) * PC:.12e} V/pC/m/m")
+        lines.append(f"  median raw                   = {np.nanmedian(kick_loss_equiv_raw):.12e} V/C/m/m")
+        rel = (np.nanmedian(kick_loss_equiv_U_norm) - kick_U_norm_V_per_C_per_m2) / kick_U_norm_V_per_C_per_m2 if kick_U_norm_V_per_C_per_m2 else np.nan
+        lines.append(f"  median relative difference   = {rel:.12e}")
+    lines.append("")
+    lines.append("OFFSET TABLE")
+    lines.append("  r_m, Re(Vz), Im(Vz), |Vz|, raw_kick, U_norm_kick_V_per_C_m_m, U_norm_kick_V_per_pC_m_m")
+    for rr, vv, kr, ku in zip(r_m, Vc, kick_loss_equiv_raw, kick_loss_equiv_U_norm):
+        lines.append(
+            f"  {rr:.12e}, {vv.real:.12e}, {vv.imag:.12e}, {abs(vv):.12e}, "
+            f"{kr:.12e}, {ku:.12e}, {ku * PC:.12e}"
+        )
+
+    filename = Path(filename)
+    filename.parent.mkdir(parents=True, exist_ok=True)
+    filename.write_text("\n".join(lines))
+
 
 def kick_from_Ez_field(
-    Ez,
-    f_010,
-    f_mnp,
-    l_factor,
-    Req_m,
+    Ex,
+    Ey=None,
+    Ez=None,
+    f_010=None,
+    f_mnp=None,
+    l_factor=None,
+    Req_m=None,
     *,
     axis="y",
     fit_pixels=8,
     beta=1.0,
     save_directory=None,
     label="",
+    centre_z: bool = False,
+    axis_i: float | None = None,
+    axis_j: float | None = None,
+    radius_pixels: float | None = None,
 ):
+    """Dipole kick diagnostic from Ez, normalised to U_CST.
+
+    New preferred call signature is
+
+        kick_from_Ez_field(Ex, Ey, Ez, f_010=..., f_mnp=..., ...)
+
+    A backwards-compatible Ez-only call is still accepted, but then Ex=Ey=0 and
+    the stored energy is not CST-equivalent.  The homotypic driver has been
+    updated to pass all three components.
+
+    Reported primary kick factor:
+
+        k_perp = |(c/omega) dVz/dr|^2 / (4 U_CST)
+
+    in V/C/m/m and V/pC/m/m.
     """
-    Dipole kick diagnostic from Ez.
+    # Backwards-compatible support for the old positional Ez-only signature:
+    # kick_from_Ez_field(Ez, f_010, f_mnp, l_factor, Req_m, ...)
+    if Ez is None:
+        Ez_arr = np.nan_to_num(np.asarray(Ex, float), nan=0.0)
+        Ex_arr = np.zeros_like(Ez_arr)
+        Ey_arr = np.zeros_like(Ez_arr)
+    else:
+        Ex_arr = np.nan_to_num(np.asarray(Ex, float), nan=0.0)
+        Ey_arr = np.nan_to_num(np.asarray(Ey, float), nan=0.0)
+        Ez_arr = np.nan_to_num(np.asarray(Ez, float), nan=0.0)
 
-    Uses f_mnp, not f_010, for the Panofsky-Wenzel factor:
+    if f_010 is None or f_mnp is None or l_factor is None or Req_m is None:
+        raise ValueError("f_010, f_mnp, l_factor and Req_m must be supplied.")
 
-        V_perp = (c / omega_mnp) dVz/dr
+    if Ex_arr.shape != Ey_arr.shape or Ex_arr.shape != Ez_arr.shape:
+        raise ValueError(f"Ex, Ey, Ez must have matching shapes; got {Ex_arr.shape}, {Ey_arr.shape}, {Ez_arr.shape}")
 
-    Also compares with the offset method:
-
-        Ez(r,z) -> Vz(r) -> loss(r) = |Vz(r)|^2 / 4
-        kick_loss_equiv(r) = (c / omega_mnp) |Vz(r)| / |r|
-
-    The loss-derived method is only expected to agree near the axis when
-    Vz(r) is approximately linear in r.
-    """
-
-    Ez = np.nan_to_num(np.asarray(Ez, float), nan=0.0)
-
-    nx, ny, nz = Ez.shape
+    nx, ny, nz = Ez_arr.shape
     ix0, iy0 = nx // 2, ny // 2
 
-    L = (C0 / f_010) / 2.0 * float(l_factor)
+    L = (C0 / float(f_010)) / 2.0 * float(l_factor)
     z_m = np.linspace(0.0, L, nz)
 
-    dx = 2.0 * Req_m / (nx - 1)
-    dy = 2.0 * Req_m / (ny - 1)
+    energy = stored_energy_from_Etotal_CST_equivalent(
+        Ex_arr, Ey_arr, Ez_arr,
+        Req_m=float(Req_m),
+        length_m=L,
+        axis_i=axis_i,
+        axis_j=axis_j,
+        radius_pixels=radius_pixels,
+    )
+    U_CST_J = energy["U_CST_J"]
+    dx = energy["dx_m"]
+    dy = energy["dy_m"]
     dr = dy if axis == "y" else dx
 
     omega = 2.0 * np.pi * float(f_mnp)
-
-    max_pix = min(fit_pixels, iy0 - 1 if axis == "y" else ix0 - 1)
+    max_pix = min(int(fit_pixels), iy0 - 1 if axis == "y" else ix0 - 1)
 
     vals = []
-
     for dp in range(-max_pix, max_pix + 1):
         if dp == 0:
             continue
-
         if axis == "y":
             r = dp * dy
-            line = Ez[ix0, iy0 + dp, :]
+            line = Ez_arr[ix0, iy0 + dp, :]
         elif axis == "x":
             r = dp * dx
-            line = Ez[ix0 + dp, iy0, :]
+            line = Ez_arr[ix0 + dp, iy0, :]
         else:
             raise ValueError("axis must be 'x' or 'y'")
-
-        V = accelerating_voltage_complex(line, z_m, omega, beta=beta)
+        V = accelerating_voltage_complex(line, z_m, omega, beta=beta, centre_z=centre_z)
         vals.append((r, V))
 
     r = np.array([v[0] for v in vals], float)
     Vc = np.array([v[1] for v in vals], complex)
-
     order = np.argsort(r)
     r = r[order]
     Vc = Vc[order]
 
-    # ------------------------------------------------------------------
-    # Method 1: direct PW gradient fit
-    # ------------------------------------------------------------------
+    # PW gradient fit.
     gr = np.polyfit(r, Vc.real, 1)[0]
     gi = np.polyfit(r, Vc.imag, 1)[0]
-
     dVz_dr = gr + 1j * gi
-
     Vperp_per_m_offset = (C0 / omega) * dVz_dr
-    kick_pw_fit = abs(Vperp_per_m_offset)
+    kick_pw_fit_raw = float(abs(Vperp_per_m_offset))
+    kick_pw_fit_U = float(abs(Vperp_per_m_offset) ** 2 / (4.0 * U_CST_J))
 
-    # Local PW estimate at each offset.
+    # Local PW estimates at each offset.
     dVz_dr_local = np.gradient(Vc, r)
-    kick_pw_local = np.abs((C0 / omega) * dVz_dr_local)
+    kick_pw_local_raw = np.abs((C0 / omega) * dVz_dr_local)
+    kick_pw_local_U = kick_pw_local_raw**2 / (4.0 * U_CST_J)
 
-    # ------------------------------------------------------------------
-    # Method 2: Ez(r) -> Vz(r) -> loss -> kick-equivalent
-    # ------------------------------------------------------------------
+    # Offset method: equivalent to |(c/omega) Vz/r|^2/(4U) near the axis.
     Vz_abs = np.abs(Vc)
+    loss_like_raw = Vz_abs**2 / 4.0
+    loss_U_norm_V_per_C = Vz_abs**2 / (4.0 * U_CST_J)
 
-    loss = Vz_abs**2 / 4.0
-
-    kick_loss_equiv = np.full_like(Vz_abs, np.nan, dtype=float)
-
+    kick_loss_equiv_raw = np.full_like(Vz_abs, np.nan, dtype=float)
+    kick_loss_equiv_U = np.full_like(Vz_abs, np.nan, dtype=float)
     nonzero = ~np.isclose(r, 0.0)
+    kick_loss_equiv_raw[nonzero] = (C0 / omega) * Vz_abs[nonzero] / np.abs(r[nonzero])
+    kick_loss_equiv_U[nonzero] = kick_loss_equiv_raw[nonzero]**2 / (4.0 * U_CST_J)
 
-    # Since loss = |Vz|^2 / 4, then |Vz| = 2 sqrt(loss).
-    # For a dipole near-axis Vz ~ r dVz/dr, so:
-    # kick = (c/omega) |dVz/dr| ~ (c/omega) |Vz|/|r|.
-    kick_loss_equiv[nonzero] = (C0 / omega) * Vz_abs[nonzero] / np.abs(r[nonzero])
-
-    # ------------------------------------------------------------------
-    # Diagnostics
-    # ------------------------------------------------------------------
     if save_directory is not None:
         save_directory = Path(save_directory)
         save_directory.mkdir(parents=True, exist_ok=True)
-
         tag = f"{label}_" if label else ""
 
         np.savez_compressed(
@@ -402,12 +606,25 @@ def kick_from_Ez_field(
             r_m=r,
             Vz_complex=Vc,
             Vz_abs=Vz_abs,
-            loss=loss,
+            loss_like_raw=loss_like_raw,
+            loss_U_norm_V_per_C=loss_U_norm_V_per_C,
+            loss_U_norm_V_per_pC=loss_U_norm_V_per_C * PC,
             dVz_dr=dVz_dr,
             dVz_dr_local=dVz_dr_local,
-            kick_pw_fit=kick_pw_fit,
-            kick_pw_local=kick_pw_local,
-            kick_loss_equiv=kick_loss_equiv,
+            kick_pw_fit_raw_V_per_C_per_m_per_m=kick_pw_fit_raw,
+            kick_pw_fit_U_norm_V_per_C_per_m_per_m=kick_pw_fit_U,
+            kick_pw_fit_U_norm_V_per_pC_per_m_per_m=kick_pw_fit_U * PC,
+            kick_pw_local_raw_V_per_C_per_m_per_m=kick_pw_local_raw,
+            kick_pw_local_U_norm_V_per_C_per_m_per_m=kick_pw_local_U,
+            kick_pw_local_U_norm_V_per_pC_per_m_per_m=kick_pw_local_U * PC,
+            kick_loss_equiv_raw_V_per_C_per_m_per_m=kick_loss_equiv_raw,
+            kick_loss_equiv_U_norm_V_per_C_per_m_per_m=kick_loss_equiv_U,
+            kick_loss_equiv_U_norm_V_per_pC_per_m_per_m=kick_loss_equiv_U * PC,
+            U_CST_J=U_CST_J,
+            int_Ex2_dV=energy["int_Ex2_dV"],
+            int_Ey2_dV=energy["int_Ey2_dV"],
+            int_Ez2_dV=energy["int_Ez2_dV"],
+            int_Etotal2_dV=energy["int_Etotal2_dV"],
             transverse_pixel_m=dr,
             longitudinal_pixel_m=L / (nz - 1),
             f_mnp=f_mnp,
@@ -415,80 +632,90 @@ def kick_from_Ez_field(
             axis=axis,
         )
 
+        _write_kick_diagnostic_txt(
+            save_directory / f"{tag}diagnostic.txt",
+            label=label or "field",
+            axis=axis,
+            frequency_Hz=float(f_mnp),
+            length_m=L,
+            beta=beta,
+            fit_pixels=max_pix,
+            r_m=r,
+            Vc=Vc,
+            dVz_dr=dVz_dr,
+            Vperp_per_m_offset=Vperp_per_m_offset,
+            kick_raw_V_per_C_per_m2=kick_pw_fit_raw,
+            kick_U_norm_V_per_C_per_m2=kick_pw_fit_U,
+            kick_U_norm_V_per_pC_per_m2=kick_pw_fit_U * PC,
+            kick_loss_equiv_U_norm=kick_loss_equiv_U,
+            kick_loss_equiv_raw=kick_loss_equiv_raw,
+            energy=energy,
+            transverse_pixel_m=dr,
+            longitudinal_pixel_m=L / (nz - 1),
+            centre_z=centre_z,
+        )
+
         # Ez transverse and longitudinal diagnostic.
         fig, axes = plt.subplots(1, 2, figsize=(10, 4), constrained_layout=True)
-
-        im0 = axes[0].imshow(Ez[:, :, nz // 2].T, origin="lower", aspect="equal")
+        im0 = axes[0].imshow(Ez_arr[:, :, nz // 2].T, origin="lower", aspect="equal")
         axes[0].set_title("Ez transverse mid")
         axes[0].set_xlabel("x pixel")
         axes[0].set_ylabel("y pixel")
         fig.colorbar(im0, ax=axes[0])
 
-        im1 = axes[1].imshow(Ez[ix0, :, :], origin="lower", aspect="auto")
+        im1 = axes[1].imshow(Ez_arr[ix0, :, :], origin="lower", aspect="auto")
         axes[1].set_title("Ez longitudinal mid")
         axes[1].set_xlabel("z pixel")
         axes[1].set_ylabel("y pixel")
         fig.colorbar(im1, ax=axes[1])
-
         fig.suptitle(f"{label}: Ez slices")
         fig.savefig(save_directory / f"{tag}Ez_slices.png", dpi=220)
         plt.close(fig)
 
         # Complex Vz and fit.
         fig, ax = plt.subplots(figsize=(7, 4), constrained_layout=True)
-
         ax.plot(r * 1e3, Vc.real, "o-", label=r"Re$(V_z)$")
         ax.plot(r * 1e3, Vc.imag, "o-", label=r"Im$(V_z)$")
-
         ax.plot(r * 1e3, np.polyval(np.polyfit(r, Vc.real, 1), r), "--", label="Re fit")
         ax.plot(r * 1e3, np.polyval(np.polyfit(r, Vc.imag, 1), r), "--", label="Im fit")
-
         ax.axvline(0.0, color="k", alpha=0.3)
         ax.set_xlabel("Offset [mm]")
-        ax.set_ylabel(r"$V_z$ [V]")
+        ax.set_ylabel(r"$V_z$ [V/C]")
         ax.set_title(f"{label}: complex Vz fit")
         ax.legend()
-
         fig.savefig(save_directory / f"{tag}Vz_complex_fit.png", dpi=220)
         plt.close(fig)
 
         # |Vz|
         fig, ax = plt.subplots(figsize=(7, 4), constrained_layout=True)
-
         ax.plot(r * 1e3, Vz_abs, "o-")
         ax.axvline(0.0, color="k", alpha=0.3)
         ax.set_xlabel("Offset [mm]")
-        ax.set_ylabel(r"$|V_z|$ [V]")
+        ax.set_ylabel(r"$|V_z|$ [V/C]")
         ax.set_title(f"{label}: offset voltage")
-
         fig.savefig(save_directory / f"{tag}r_vs_Vz_abs.png", dpi=220)
         plt.close(fig)
 
-        # Loss.
+        # U-normalised loss-like offset scan.
         fig, ax = plt.subplots(figsize=(7, 4), constrained_layout=True)
-
-        ax.plot(r * 1e3, loss, "o-")
+        ax.plot(r * 1e3, loss_U_norm_V_per_C * PC, "o-")
         ax.axvline(0.0, color="k", alpha=0.3)
         ax.set_xlabel("Offset [mm]")
-        ax.set_ylabel(r"$|V_z|^2/4$")
-        ax.set_title(f"{label}: loss-like offset scan")
-
+        ax.set_ylabel(r"$|V_z|^2/(4U_{CST})$ [V/pC]")
+        ax.set_title(f"{label}: U-normalised offset voltage loss")
         fig.savefig(save_directory / f"{tag}r_vs_loss.png", dpi=220)
         plt.close(fig)
 
         # Kick comparison.
         fig, ax = plt.subplots(figsize=(7, 4), constrained_layout=True)
-
-        ax.plot(r * 1e3, kick_pw_local, "o-", label="PW local gradient")
-        ax.plot(r * 1e3, kick_loss_equiv, "s-", label=r"$V_z \rightarrow$ loss equivalent")
-        ax.axhline(kick_pw_fit, color="k", ls="--", alpha=0.6, label="PW linear fit")
-
+        ax.plot(r * 1e3, kick_pw_local_U * PC, "o-", label="PW local gradient")
+        ax.plot(r * 1e3, kick_loss_equiv_U * PC, "s-", label=r"$V_z/r$ offset equivalent")
+        ax.axhline(kick_pw_fit_U * PC, color="k", ls="--", alpha=0.6, label="PW linear fit")
         ax.axvline(0.0, color="k", alpha=0.3)
         ax.set_xlabel("Offset [mm]")
-        ax.set_ylabel(r"Kick [$\mathrm{V/C/m^2}$]")
-        ax.set_title(f"{label}: kick comparison")
+        ax.set_ylabel(r"Kick [$\mathrm{V/pC/m/m}$]")
+        ax.set_title(f"{label}: U-normalised kick comparison")
         ax.legend()
-
         fig.savefig(save_directory / f"{tag}r_vs_kick_comparison.png", dpi=220)
         plt.close(fig)
 
@@ -496,18 +723,31 @@ def kick_from_Ez_field(
         "r_m": r,
         "Vz_complex_V": Vc,
         "Vz_abs_V": Vz_abs,
-        "loss": loss,
+        "loss": loss_U_norm_V_per_C * PC,
+        "loss_like_raw_V2_per_C2": loss_like_raw,
+        "loss_U_norm_V_per_C": loss_U_norm_V_per_C,
+        "loss_U_norm_V_per_pC": loss_U_norm_V_per_C * PC,
+        "U_CST_J": U_CST_J,
+        "energy_diagnostics": energy,
         "dVz_dr_V_per_m": dVz_dr,
         "dVz_dr_local_V_per_m": dVz_dr_local,
         "Vperp_per_m_offset_V_per_m": Vperp_per_m_offset,
-        "kick_V_per_C_per_m_per_m": kick_pw_fit,
-        "kick_pw_local_V_per_C_per_m_per_m": kick_pw_local,
-        "kick_loss_equiv_V_per_C_per_m_per_m": kick_loss_equiv,
+        "kick_raw_V_per_C_per_m_per_m": kick_pw_fit_raw,
+        "kick_V_per_C_per_m_per_m": kick_pw_fit_U,
+        "kick_V_per_pC_per_m_per_m": kick_pw_fit_U * PC,
+        "kick_pw_local_raw_V_per_C_per_m_per_m": kick_pw_local_raw,
+        "kick_pw_local_V_per_C_per_m_per_m": kick_pw_local_U,
+        "kick_pw_local_V_per_pC_per_m_per_m": kick_pw_local_U * PC,
+        "kick_loss_equiv_raw_V_per_C_per_m_per_m": kick_loss_equiv_raw,
+        "kick_loss_equiv_V_per_C_per_m_per_m": kick_loss_equiv_U,
+        "kick_loss_equiv_V_per_pC_per_m_per_m": kick_loss_equiv_U * PC,
         "transverse_pixel_m": dr,
         "longitudinal_pixel_m": L / (nz - 1),
         "axis": axis,
         "f_mnp_Hz": float(f_mnp),
         "omega_rad_s": omega,
+        "centre_z": bool(centre_z),
+        "normalisation": "U_CST = 0.5 eps0 integral |E|^2 dV; k_perp=|(c/omega)dVz/dr|^2/(4U_CST)",
     }
 
 

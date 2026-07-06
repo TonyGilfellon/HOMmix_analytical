@@ -63,3 +63,9 @@ if __name__ == "__main__":
     p = 3
     f_213 = f_tm(m, n, p, R, d_0)
     print(f"{f_213 = }")
+
+    m = 1
+    n = 1
+    p = 3
+    f_113 = f_tm(m, n, p, R, d_0)
+    print(f"{f_113 = }")
