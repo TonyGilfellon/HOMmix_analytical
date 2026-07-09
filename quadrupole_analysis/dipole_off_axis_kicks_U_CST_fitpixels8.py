@@ -1,25 +1,16 @@
-"""Run analytical homotypic TM m=2 quadrupole crossing analysis.
+"""Run analytical homotypic TM m=1 dipole crossing analysis.
 
-Use with HOMmix_analytical_master_module_quadrupole_stripped.py in the same folder.
-
-Array convention: field[x_index, y_index, z_index].
-Plot convention is handled by the helper module:
-  - iris/transverse slices: x horizontal, y vertical
-  - longitudinal slices: z horizontal, y vertical
-
-The quadrupole focusing study fits the near-axis complex longitudinal voltage
-Vz(x,y) to a quadratic polynomial and applies the Panofsky-Wenzel relation to
-estimate the transverse-voltage gradient matrix in V/C/m/m.
+Use with HOMmix_analytical_master_module_dipole_stripped.py in the same folder.
 """
 from __future__ import annotations
 
 from pathlib import Path
 import numpy as np
-import HOMmix_analytical_master_module_quadrupole_U_CST as hamm
 import matplotlib.pyplot as plt
+import HOMmix_analytical_master_module_dipole_U_CST as hamm
 
 
-def assemble_all_quadrupole_data_dict(
+def assemble_all_dipole_data_dict(
     *,
     n_max: int = 3,
     p_max: int = 3,
@@ -29,56 +20,33 @@ def assemble_all_quadrupole_data_dict(
     param_sweep_resolution: int = 1000,
     voxel_res: int = 151,
 ):
-    """Build TM_2np frequency sweeps and design-length field maps."""
+    """Build TM_1np frequency sweeps and design-length field maps."""
     lambda_010 = hamm.C0 / frequency_010
     design_L = lambda_010 / 2.0
     R = hamm.pillbox_radius_from_freq(frequency_010)
     length_factors = np.linspace(LF_start, LF_stop, param_sweep_resolution)
 
-    all_data = {
-        "TM": {},
-        "length_factor_vector": length_factors.tolist(),
-        "metadata": {
-            "frequency_010_Hz": frequency_010,
-            "R_m": R,
-            "design_L_m": design_L,
-            "m": 2,
-            "n_range": [1, n_max],
-            "p_range": [0, p_max],
-        },
-    }
+    all_data = {"TM": {}, "length_factor_vector": length_factors.tolist(), "metadata": {"frequency_010_Hz": frequency_010, "R_m": R, "design_L_m": design_L}}
 
     for p in range(p_max + 1):
         for n in range(1, n_max + 1):
-            m = 2
+            m = 1
             mnp = f"{m}{n}{p}"
             print(f"Building TM{mnp}")
-            field = hamm.pillbox_field_voxel_grid_xyz(
-                R,
-                design_L,
-                m,
-                n,
-                p,
-                voxel_res,
-                voxel_res,
-                voxel_res,
-                E0=1.0,
-                mode="TM",
-            )
-            freqs = [hamm.f_tm(m, n, p, R, lf * design_L) for lf in length_factors]
+            field = hamm.pillbox_field_voxel_grid_xyz(R, design_L, m, n, p, voxel_res, voxel_res, voxel_res, E0=1.0, mode="TM")
+            freqs = [hamm.f_tm(m, n, p, R, lf*design_L) for lf in length_factors]
             design_freq = hamm.f_tm(m, n, p, R, design_L)
             all_data["TM"][mnp] = {
                 "3D_Efield": field,
                 "frequency_Hz": freqs,
-                "frequency_normalised": (np.asarray(freqs) / frequency_010).tolist(),
+                "frequency_normalised": (np.asarray(freqs)/frequency_010).tolist(),
                 "design_frequency_Hz": design_freq,
-                "design_frequency_normalised": design_freq / frequency_010,
+                "design_frequency_normalised": design_freq/frequency_010,
             }
     return all_data
 
 
 def component_summary(field: dict) -> dict:
-    """Max component diagnostics to catch bad field construction."""
     s = {}
     for k in ["Ex", "Ey", "Ez", "Eperp", "|E|"]:
         arr = np.asarray(field[k])
@@ -87,60 +55,6 @@ def component_summary(field: dict) -> dict:
     s["max_abs_Ex_over_Ez"] = float(s["max_abs_Ex"] / ez) if ez > 0 else np.inf
     s["max_abs_Ey_over_Ez"] = float(s["max_abs_Ey"] / ez) if ez > 0 else np.inf
     return s
-
-
-def focusing_summary_line(name: str, result: dict) -> str:
-    """Compact one-line focusing/defocusing summary."""
-    ecls = result["electron_force_classification"]
-    return (
-        f"  {name:5s}: Kxx={result['Kxx_V_per_pC_per_m3']:.6e}, "
-        f"Kxy={result['Kxy_V_per_pC_per_m3']:.6e}, "
-        f"Kyy={result['Kyy_V_per_pC_per_m3']:.6e}, "
-        f"Kiso={result['Kiso_V_per_pC_per_m3']:.6e} V/pC/m^3; "
-        f"KQ={result['K_Q_V_per_pC_per_m3']:.6e} V/pC/m^3; "
-        f"electron x={ecls['x']}, y={ecls['y']}"
-    )
-
-def write_crossing_quadrupole_summary(out_file: str | Path, *, key: str, mode_i: str, mode_j: str, crossing: dict, focusing: dict) -> None:
-    out_file = Path(out_file)
-    out_file.parent.mkdir(parents=True, exist_ok=True)
-    lines = []
-    lines.append(f"Quadrupole U_CST diagnostic: TM{mode_i} -- TM{mode_j}")
-    lines.append(f"crossing_key = {key}")
-    lines.append(f"length_factor = {float(crossing['length_factor']):.12e}")
-    lines.append(f"frequency_Hz = {float(crossing['frequency_Hz']):.12e}")
-    lines.append("")
-    lines.append("CONVENTIONS")
-    lines.append("  U_CST_J = 0.5 eps0 integral |E|^2 dV")
-    lines.append("  z convention = z in [0,L], centre_z=False")
-    lines.append("  raw K = phase-aligned (c/omega) Hessian(Vz) [V/C/m/m]")
-    lines.append("  reported signed K = K_raw/sqrt(4 U_CST)/length_m * 1e-12 [V/pC/m^3]")
-    lines.append("  Kiso = (Kxx + Kyy)/2 retains sign; KQ = sqrt((Kxx-Kyy)^2 + 4 Kxy^2) is positive")
-    lines.append("")
-    for name in ("E1", "E2", "plus", "minus"):
-        r = focusing[name]
-        lines.append(f"{name}:")
-        lines.append(f"  U_CST_J                       = {r['U_CST_J']:.12e}")
-        lines.append(f"  Kxx_raw_V_per_C_per_m_per_m   = {r['Kxx_raw_V_per_C_per_m_per_m']:.12e}")
-        lines.append(f"  Kxy_raw_V_per_C_per_m_per_m   = {r['Kxy_raw_V_per_C_per_m_per_m']:.12e}")
-        lines.append(f"  Kyy_raw_V_per_C_per_m_per_m   = {r['Kyy_raw_V_per_C_per_m_per_m']:.12e}")
-        lines.append(f"  Kxx_U_CST_norm                = {r['Kxx_U_CST_norm']:.12e}")
-        lines.append(f"  Kxy_U_CST_norm                = {r['Kxy_U_CST_norm']:.12e}")
-        lines.append(f"  Kyy_U_CST_norm                = {r['Kyy_U_CST_norm']:.12e}")
-        lines.append(f"  K_quad_strength_U_CST_norm    = {r['K_quad_strength_U_CST_norm']:.12e}")
-        lines.append(f"  Kxx_signed_V_per_pC_per_m3    = {r['Kxx_V_per_pC_per_m3']:.12e}")
-        lines.append(f"  Kxy_signed_V_per_pC_per_m3    = {r['Kxy_V_per_pC_per_m3']:.12e}")
-        lines.append(f"  Kyy_signed_V_per_pC_per_m3    = {r['Kyy_V_per_pC_per_m3']:.12e}")
-        lines.append(f"  Kiso_signed_V_per_pC_per_m3   = {r['Kiso_V_per_pC_per_m3']:.12e}")
-        lines.append(f"  KQ_V_per_pC_per_m3            = {r['K_Q_V_per_pC_per_m3']:.12e}")
-        if "Kxx_squaremag_V_per_pC_per_m3" in r:
-            lines.append(f"  Kxx_squaremag_legacy          = {r['Kxx_squaremag_V_per_pC_per_m3']:.12e}")
-            lines.append(f"  Kxy_squaremag_legacy          = {r['Kxy_squaremag_V_per_pC_per_m3']:.12e}")
-            lines.append(f"  Kyy_squaremag_legacy          = {r['Kyy_squaremag_V_per_pC_per_m3']:.12e}")
-        lines.append(f"  electron_x/electron_y         = {r['electron_force_classification']['x']} / {r['electron_force_classification']['y']}")
-        lines.append("")
-    out_file.write_text("\n".join(lines))
-
 
 
 
@@ -297,149 +211,6 @@ def plot_field_slices_combined(field_data: dict, out_dir: str | Path, title: str
         fig.savefig(out_dir / f"{stype}.png", dpi=300)
         plt.close(fig)
 
-def analyse_crossing(
-    key: str,
-    crossing: dict,
-    data_dict: dict,
-    save_root: Path,
-    f_010: float,
-    voxel_res: int,
-    *,
-    create_fields: bool = True,
-    fit_pixels: int = 8,
-) -> dict:
-    """Analyse one TM2np/TM2np crossing."""
-    mode_i = crossing["mode_i"].split("_", 1)[1]
-    mode_j = crossing["mode_j"].split("_", 1)[1]
-    out_dir = save_root / f"TM{mode_i}_TM{mode_j}"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    raw_i = data_dict["TM"][mode_i]["3D_Efield"]
-    raw_j = data_dict["TM"][mode_j]["3D_Efield"]
-
-    # Rotate each parent field before combination. The helper verifies that the
-    # maximum |E| voxel is in the vertical longitudinal plane |E|[mid,:,:].
-    rot_i = hamm.align_field_to_vertical_plane(
-        raw_i,
-        out_plot=str(out_dir / f"TM{mode_i}_theta_r_rotation.png"),
-        label=f"TM{mode_i}",
-    )
-    rot_j = hamm.align_field_to_vertical_plane(
-        raw_j,
-        out_plot=str(out_dir / f"TM{mode_j}_theta_r_rotation.png"),
-        label=f"TM{mode_j}",
-    )
-
-    E1 = {"Ex": rot_i["Ex"], "Ey": rot_i["Ey"], "Ez": rot_i["Ez"]}
-    E2 = {"Ex": rot_j["Ex"], "Ey": rot_j["Ey"], "Ez": rot_j["Ez"]}
-    field_data = hamm.combine_fields(E1, E2)
-
-    hamm.save_field_data_npz(field_data, str(out_dir / "field_data.npz"))
-
-    slice_dict = hamm.extract_slices(field_data)
-    hamm.pickle_save(slice_dict, out_dir / "slice_dict.pkl")
-
-    hamm.plot_field_slices(
-        field_data,
-        str(out_dir / "plots"),
-        title=f"TM{mode_i} / TM{mode_j}",
-    )
-
-    plot_field_slices_combined(
-        field_data,
-        out_dir / "combined_plots",
-        title=f"TM{mode_i} / TM{mode_j}",
-    )
-
-    merged_slice_pdf = save_four_slice_pdfs_and_merge(
-        slice_dict=slice_dict,
-        out_dir=out_dir / "slice_summary_pdfs",
-        merged_pdf_name=f"TM{mode_i}_TM{mode_j}_field_summary.pdf",
-    )
-
-    f_cross = float(crossing["frequency_Hz"])
-    lf_cross = float(crossing["length_factor"])
-    Req_m = hamm.pillbox_radius_from_freq(f_010)
-
-    focus_jobs = {
-        "E1": (field_data["E1_Ex"], field_data["E1_Ey"], field_data["E1_Ez"], float(data_dict["TM"][mode_i]["design_frequency_Hz"]), 1.0),
-        "E2": (field_data["E2_Ex"], field_data["E2_Ey"], field_data["E2_Ez"], float(data_dict["TM"][mode_j]["design_frequency_Hz"]), 1.0),
-        "plus": (field_data["Ex_plus"], field_data["Ey_plus"], field_data["Ez_plus"], f_cross, lf_cross),
-        "minus": (field_data["Ex_minus"], field_data["Ey_minus"], field_data["Ez_minus"], f_cross, lf_cross),
-    }
-
-    focusing = {}
-    for name, (Ex, Ey, Ez, freq, lf) in focus_jobs.items():
-        focusing[name] = hamm.quadrupole_focusing_from_Ez_field(
-            Ez,
-            f_010=f_010,
-            f_mnp=freq,
-            l_factor=lf,
-            Req_m=Req_m,
-            Ex=Ex,
-            Ey=Ey,
-            fit_pixels=fit_pixels,
-            save_directory=out_dir / "quadrupole_diagnostics" / name,
-            label=name,
-        )
-        hamm.plot_quadrupole_voltage_fit(
-            focusing[name],
-            str(out_dir / f"quadrupole_fit_{name}.png"),
-            title=f"TM{mode_i}/TM{mode_j} {name}",
-        )
-
-    analysis = {
-        "crossing_key": key,
-        "crossing": crossing,
-        "mode_i": mode_i,
-        "mode_j": mode_j,
-        "component_summary_i": component_summary(raw_i),
-        "component_summary_j": component_summary(raw_j),
-        "rotation_i": {
-            "angle_deg": rot_i["rotation_angle_deg"],
-            "peak_before": rot_i["peak_before"],
-            "peak_after": rot_i["peak_after"],
-        },
-        "rotation_j": {
-            "angle_deg": rot_j["rotation_angle_deg"],
-            "peak_before": rot_j["peak_before"],
-            "peak_after": rot_j["peak_after"],
-        },
-        "focusing_units": "reported Kxx/Kxy/Kyy are signed phase-aligned values in V/pC/m^3 using K_raw/sqrt(4 U_CST)/L*1e-12; Kiso is signed and K_Q is positive",
-        "focusing_sign_convention": (
-            "K is the phase-aligned transverse-voltage gradient matrix. "
-            "Positive Kxx deflects a positive test charge further +x; "
-            "electron focusing/defocusing labels reverse that sign."
-        ),
-        "focusing": focusing,
-        "files": {
-        "field_data_npz": str(out_dir / "field_data.npz"),
-        "slice_dict": str(out_dir / "slice_dict.pkl"),
-        "plots": str(out_dir / "plots"),
-        "combined_plots": str(out_dir / "combined_plots"),
-        "slice_summary_dir": str(out_dir / "slice_summary_pdfs"),
-        "merged_slice_pdf": str(merged_slice_pdf),
-        },
-    }
-    write_crossing_quadrupole_summary(
-        out_dir / "quadrupole_focusing_summary_U_CST.txt",
-        key=key,
-        mode_i=mode_i,
-        mode_j=mode_j,
-        crossing=crossing,
-        focusing=focusing,
-    )
-
-    hamm.pickle_save(analysis, out_dir / "crossing_analysis.pkl")
-
-    print(f"\n{key}")
-    print(f"  TM{mode_i} rotation: {analysis['rotation_i']}")
-    print(f"  TM{mode_j} rotation: {analysis['rotation_j']}")
-    for name, result in focusing.items():
-        print(focusing_summary_line(name, result))
-    return analysis
-
-
 
 def _save_one_2x4_slice_pdf(
     slice_dict: dict[str, np.ndarray],
@@ -482,6 +253,9 @@ def _save_one_2x4_slice_pdf(
     def _safe_vmax(arrays, ref):
         scaled_max = max(float(np.nanmax(np.abs(a / ref))) for a in arrays)
         return max(1.0, scaled_max) if np.isfinite(scaled_max) and scaled_max > 0 else 1.0
+
+    print(f"{slice_dict.keys() = }")
+    print(f"E1_Ez_{stype}")
 
     parent_ez_ref = _safe_ref([
         _real_image(slice_dict[f"E1_Ez_{stype}"]),
@@ -762,24 +536,264 @@ def save_four_slice_pdfs_and_merge(
     return out_file
 
 
+def write_crossing_kick_summary_txt(analysis: dict, filename: str | Path) -> None:
+    """Write a compact crossing-level text diagnostic for the U_CST kick analysis."""
+    lines = []
+    lines.append(f"Dipole crossing: TM{analysis['mode_i']} -- TM{analysis['mode_j']}")
+    lines.append(f"crossing_key = {analysis['crossing_key']}")
+    lines.append(f"ell = {analysis['crossing']['length_factor']:.12e}")
+    lines.append(f"f_cross_Hz = {analysis['crossing']['frequency_Hz']:.12e}")
+    lines.append("")
+    lines.append("NORMALISATION")
+    lines.append("  U_CST = 0.5 eps0 integral |E|^2 dV")
+    lines.append("  k_perp = |(c/omega) dVz/dr|^2/(4 U_CST)")
+    lines.append("  dVz/dr is obtained from a finite-window linear fit using fit_pixels=8")
+    lines.append("  this matches the heterotypic Taylor/Hessian transverse fit radius")
+    lines.append("  r -> 0 extrapolated offset method is retained under kick_extrapolated_* keys")
+    lines.append("  primary units = V/pC/m/m")
+    lines.append("  voltage phase convention: centred_z=False, z in [0,L]")
+    lines.append("")
+    lines.append("ROTATIONS")
+    lines.append(f"  TM{analysis['mode_i']} rotation = {analysis['rotation_i']}")
+    lines.append(f"  TM{analysis['mode_j']} rotation = {analysis['rotation_j']}")
+    lines.append("")
+    lines.append("FIELD RESULTS")
+    for name in ("E1", "E2", "plus", "minus"):
+        k = analysis["kicks"][name]
+        e = k.get("energy_diagnostics", {})
+        lines.append(f"{name} ({k.get('mode', name)}):")
+        lines.append(f"  frequency_source             = {k.get('frequency_source')}")
+        lines.append(f"  frequency_Hz                 = {k['f_mnp_Hz']:.12e}")
+        lines.append(f"  length_factor                = {k.get('length_factor')}")
+        lines.append(f"  U_CST_J                      = {k['U_CST_J']:.12e}")
+        if e:
+            lines.append(f"  int_Etotal2_dV               = {e['int_Etotal2_dV']:.12e}")
+            lines.append(f"  int_Ez2_dV                   = {e['int_Ez2_dV']:.12e}")
+            lines.append(f"  U_Etotal_time_average_J      = {e['U_Etotal_time_average_J']:.12e}")
+            lines.append(f"  U_Ez_only_peak_J             = {e['U_Ez_only_peak_J']:.12e}")
+        lines.append(f"  dVz_dr                       = {k['dVz_dr_V_per_m'].real:.12e}{k['dVz_dr_V_per_m'].imag:+.12e}j V/C/m")
+        lines.append(f"  raw finite-window PW kick    = {k['kick_raw_V_per_C_per_m_per_m']:.12e} V/C/m/m")
+        lines.append(f"  U_CST finite-window PW kick  = {k['kick_V_per_C_per_m_per_m']:.12e} V/C/m/m")
+        lines.append(f"  U_CST finite-window PW kick  = {k['kick_V_per_pC_per_m_per_m']:.12e} V/pC/m/m")
+        if "kick_extrapolated_V_per_pC_per_m_per_m" in k:
+            lines.append(f"  r->0 extrapolated diagnostic = {k['kick_extrapolated_V_per_pC_per_m_per_m']:.12e} V/pC/m/m")
+        if "kick_extrapolation_degree" in k:
+            lines.append(f"  extrapolation degree/points  = {k['kick_extrapolation_degree']} / {k['kick_extrapolation_n_points']}")
+        offset = k['kick_loss_equiv_V_per_pC_per_m_per_m']
+        if np.any(np.isfinite(offset)):
+            lines.append(f"  median offset-equivalent     = {np.nanmedian(offset):.12e} V/pC/m/m")
+        lines.append(f"  transverse_pixel_m           = {k['transverse_pixel_m']:.12e}")
+        lines.append(f"  longitudinal_pixel_m         = {k['longitudinal_pixel_m']:.12e}")
+        lines.append("")
+
+    filename = Path(filename)
+    filename.parent.mkdir(parents=True, exist_ok=True)
+    filename.write_text("\n".join(lines))
+
+def analyse_crossing(
+    key: str,
+    crossing: dict,
+    data_dict: dict,
+    save_root: Path,
+    f_010: float,
+    voxel_res: int,
+    create_fields: bool = True,
+) -> dict:
+
+    mode_i = crossing["mode_i"].split("_", 1)[1]
+    mode_j = crossing["mode_j"].split("_", 1)[1]
+
+    out_dir = save_root / f"TM{mode_i}_TM{mode_j}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    if create_fields:
+        raw_i = data_dict["TM"][mode_i]["3D_Efield"]
+        raw_j = data_dict["TM"][mode_j]["3D_Efield"]
+
+        rot_i = hamm.align_field_to_vertical_plane(
+            raw_i,
+            out_plot=str(out_dir / f"TM{mode_i}_theta_r_rotation.png"),
+            label=f"TM{mode_i}",
+        )
+
+        rot_j = hamm.align_field_to_vertical_plane(
+            raw_j,
+            out_plot=str(out_dir / f"TM{mode_j}_theta_r_rotation.png"),
+            label=f"TM{mode_j}",
+        )
+
+        E1 = {"Ex": rot_i["Ex"], "Ey": rot_i["Ey"], "Ez": rot_i["Ez"]}
+        E2 = {"Ex": rot_j["Ex"], "Ey": rot_j["Ey"], "Ez": rot_j["Ez"]}
+
+        field_data = hamm.combine_fields(E1, E2)
+        hamm.save_field_data_npz(field_data, str(out_dir / "field_data.npz"))
+
+        slice_dict = hamm.extract_slices(field_data)
+        hamm.pickle_save(slice_dict, out_dir / "slice_dict.pkl")
+
+        # hamm.plot_field_slices(
+        #     field_data,
+        #     str(out_dir / "plots"),
+        #     title=f"TM{mode_i} / TM{mode_j}",
+        # )
+
+        plot_field_slices_combined(
+            field_data,
+            out_dir / "combined_plots",
+            title=f"TM{mode_i} / TM{mode_j}",
+        )
+
+    else:
+        field_data = hamm.load_field_data_npz(str(out_dir / "field_data.npz"))
+        slice_dict = hamm.pickle_load(out_dir / "slice_dict.pkl")
+
+        rot_i = {
+            "rotation_angle_deg": None,
+            "peak_before": None,
+            "peak_after": None,
+        }
+        rot_j = {
+            "rotation_angle_deg": None,
+            "peak_before": None,
+            "peak_after": None,
+        }
+
+        raw_i = data_dict["TM"][mode_i]["3D_Efield"]
+        raw_j = data_dict["TM"][mode_j]["3D_Efield"]
+
+    merged_slice_pdf = save_four_slice_pdfs_and_merge(
+        slice_dict=slice_dict,
+        out_dir=out_dir / "slice_summary_pdfs",
+        merged_pdf_name=f"TM{mode_i}_TM{mode_j}_field_summary.pdf",
+    )
+
+    f_cross = float(crossing["frequency_Hz"])
+    lf_cross = float(crossing["length_factor"])
+    Req_m = hamm.pillbox_radius_from_freq(f_010)
+
+    kick_jobs = {
+        "E1": {
+            "Ex": field_data["E1_Ex"],
+            "Ey": field_data["E1_Ey"],
+            "Ez": field_data["E1_Ez"],
+            "frequency_Hz": data_dict["TM"][mode_i]["design_frequency_Hz"],
+            "frequency_source": "parent_design_frequency",
+            "length_factor": 1.0,
+            "mode": f"TM{mode_i}",
+        },
+        "E2": {
+            "Ex": field_data["E2_Ex"],
+            "Ey": field_data["E2_Ey"],
+            "Ez": field_data["E2_Ez"],
+            "frequency_Hz": data_dict["TM"][mode_j]["design_frequency_Hz"],
+            "frequency_source": "parent_design_frequency",
+            "length_factor": 1.0,
+            "mode": f"TM{mode_j}",
+        },
+        "plus": {
+            "Ex": field_data["Ex_plus"],
+            "Ey": field_data["Ey_plus"],
+            "Ez": field_data["Ez_plus"],
+            "frequency_Hz": f_cross,
+            "frequency_source": "crossing_degenerate_frequency",
+            "length_factor": lf_cross,
+            "mode": "E+",
+        },
+        "minus": {
+            "Ex": field_data["Ex_minus"],
+            "Ey": field_data["Ey_minus"],
+            "Ez": field_data["Ez_minus"],
+            "frequency_Hz": f_cross,
+            "frequency_source": "crossing_degenerate_frequency",
+            "length_factor": lf_cross,
+            "mode": "E-",
+        },
+    }
+
+    kicks = {}
+
+    for name, job in kick_jobs.items():
+        kicks[name] = hamm.kick_from_Ez_field(
+            job["Ex"],
+            job["Ey"],
+            job["Ez"],
+            f_010=f_010,
+            f_mnp=job["frequency_Hz"],
+            l_factor=job["length_factor"],
+            Req_m=Req_m,
+            axis="y",
+            fit_pixels=4,
+            save_directory=out_dir / "kick_diagnostics" / name,
+            label=name,
+            centre_z=False,
+        )
+        kicks[name]["mode"] = job["mode"]
+        kicks[name]["frequency_source"] = job["frequency_source"]
+        kicks[name]["length_factor"] = float(job["length_factor"])
+
+    analysis = {
+        "crossing_key": key,
+        "crossing": crossing,
+        "mode_i": mode_i,
+        "mode_j": mode_j,
+        "component_summary_i": component_summary(raw_i),
+        "component_summary_j": component_summary(raw_j),
+        "rotation_i": {
+            "angle_deg": rot_i["rotation_angle_deg"],
+            "peak_before": rot_i["peak_before"],
+            "peak_after": rot_i["peak_after"],
+        },
+        "rotation_j": {
+            "angle_deg": rot_j["rotation_angle_deg"],
+            "peak_before": rot_j["peak_before"],
+            "peak_after": rot_j["peak_after"],
+        },
+        "kick_units": "V/pC/m/m; U_CST normalised",
+        "kicks": kicks,
+        "files": {
+            "field_data_npz": str(out_dir / "field_data.npz"),
+            "slice_dict": str(out_dir / "slice_dict.pkl"),
+            "plots": str(out_dir / "plots"),
+            "combined_plots": str(out_dir / "combined_plots"),
+            "slice_summary_pdfs": str(out_dir / "slice_summary_pdfs"),
+            "merged_slice_pdf": str(merged_slice_pdf),
+        },
+    }
+
+    write_crossing_kick_summary_txt(analysis, out_dir / "dipole_kick_summary_U_CST.txt")
+
+    hamm.pickle_save(analysis, out_dir / "crossing_analysis.pkl")
+
+    print(f"\n{key}")
+    print(f"  TM{mode_i} rotation: {analysis['rotation_i']}")
+    print(f"  TM{mode_j} rotation: {analysis['rotation_j']}")
+    print(f"  merged field summary PDF: {merged_slice_pdf}")
+
+    for name, k in kicks.items():
+        print(
+            f"  {name:5s} kick = "
+            f"{k['kick_V_per_pC_per_m_per_m']:.6e} V/pC/m/m (U_CST, r->0 extrapolated); raw={k['kick_raw_V_per_C_per_m_per_m']:.6e} V/C/m/m"
+        )
+
+    return analysis
+
 def main():
     # Edit these two paths for your machine.
     datapath = Path(r"D:\PhD\HOMmix\HOMmix_analytical\data")
-    savepath = Path(r"D:\PhD\HOMmix\HOMmix_analytical\analysis\homotypic_quadrupoles")
+    savepath = Path(r"D:\PhD\HOMmix\HOMmix_analytical\analysis\homotypic_dipoles")
 
     n_max, p_max = 3, 3
     voxel_res = 151
     f_010 = 1.3e9
-    create_data = True
+    create_data = False
     create_fields = True
-    fit_pixels = 8
 
     datapath.mkdir(parents=True, exist_ok=True)
     savepath.mkdir(parents=True, exist_ok=True)
-    data_file = datapath / f"TMm2_TMm2_data_dict_{voxel_res}x{voxel_res}x{voxel_res}.pkl"
+    data_file = datapath / f"TMm1_TMm1_data_dict_{voxel_res}x{voxel_res}x{voxel_res}.pkl"
 
     if create_data:
-        data_dict = assemble_all_quadrupole_data_dict(
+        data_dict = assemble_all_dipole_data_dict(
             n_max=n_max,
             p_max=p_max,
             frequency_010=f_010,
@@ -792,29 +806,18 @@ def main():
     else:
         data_dict = hamm.pickle_load(data_file)
 
+    # Diagnostic: Ex can be > Ez for p>0, but should not be enormous due to a missing 1/kc scaling.
     print("\nComponent max summaries at design length:")
     for mnp, d in data_dict["TM"].items():
         s = component_summary(d["3D_Efield"])
-        print(
-            f"  TM{mnp}: max|Ex|/max|Ez|={s['max_abs_Ex_over_Ez']:.4g}, "
-            f"max|Ey|/max|Ez|={s['max_abs_Ey_over_Ez']:.4g}"
-        )
+        print(f"  TM{mnp}: max|Ex|/max|Ez|={s['max_abs_Ex_over_Ez']:.4g}, max|Ey|/max|Ez|={s['max_abs_Ey_over_Ez']:.4g}")
 
     crossing_results = hamm.find_mode_crossings_from_all_data(data_dict, mode_type="TM")
     hamm.pickle_save(crossing_results, savepath / "crossing_results.pkl")
 
     analyses = {}
     for key, crossing in crossing_results["TM"]["crossings"].items():
-        analyses[key] = analyse_crossing(
-            key,
-            crossing,
-            data_dict,
-            savepath,
-            f_010,
-            voxel_res,
-            create_fields=create_fields,
-            fit_pixels=fit_pixels,
-        )
+        analyses[key] = analyse_crossing(key, crossing, data_dict, savepath, f_010, voxel_res, create_fields=create_fields)
     hamm.pickle_save(analyses, savepath / "all_crossing_analyses.pkl")
 
 

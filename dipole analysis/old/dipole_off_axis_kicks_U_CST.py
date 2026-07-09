@@ -546,8 +546,7 @@ def write_crossing_kick_summary_txt(analysis: dict, filename: str | Path) -> Non
     lines.append("")
     lines.append("NORMALISATION")
     lines.append("  U_CST = 0.5 eps0 integral |E|^2 dV")
-    lines.append("  k_perp = r -> 0 extrapolation of (c/omega)|Vz(r)|^2/(4 U_CST r^2)")
-    lines.append("  older PW-gradient diagnostic is retained under kick_pw_fit_* keys")
+    lines.append("  k_perp = |(c/omega) dVz/dr|^2/(4 U_CST)")
     lines.append("  primary units = V/pC/m/m")
     lines.append("  voltage phase convention: centred_z=False, z in [0,L]")
     lines.append("")
@@ -570,13 +569,9 @@ def write_crossing_kick_summary_txt(analysis: dict, filename: str | Path) -> Non
             lines.append(f"  U_Etotal_time_average_J      = {e['U_Etotal_time_average_J']:.12e}")
             lines.append(f"  U_Ez_only_peak_J             = {e['U_Ez_only_peak_J']:.12e}")
         lines.append(f"  dVz_dr                       = {k['dVz_dr_V_per_m'].real:.12e}{k['dVz_dr_V_per_m'].imag:+.12e}j V/C/m")
-        lines.append(f"  raw extrapolated kick        = {k['kick_raw_V_per_C_per_m_per_m']:.12e} V/C/m/m")
-        lines.append(f"  U_CST extrapolated kick      = {k['kick_V_per_C_per_m_per_m']:.12e} V/C/m/m")
-        lines.append(f"  U_CST extrapolated kick      = {k['kick_V_per_pC_per_m_per_m']:.12e} V/pC/m/m")
-        if "kick_pw_fit_V_per_pC_per_m_per_m" in k:
-            lines.append(f"  PW-gradient fit diagnostic   = {k['kick_pw_fit_V_per_pC_per_m_per_m']:.12e} V/pC/m/m")
-        if "kick_extrapolation_degree" in k:
-            lines.append(f"  extrapolation degree/points  = {k['kick_extrapolation_degree']} / {k['kick_extrapolation_n_points']}")
+        lines.append(f"  raw PW kick                  = {k['kick_raw_V_per_C_per_m_per_m']:.12e} V/C/m/m")
+        lines.append(f"  U_CST PW kick                = {k['kick_V_per_C_per_m_per_m']:.12e} V/C/m/m")
+        lines.append(f"  U_CST PW kick                = {k['kick_V_per_pC_per_m_per_m']:.12e} V/pC/m/m")
         offset = k['kick_loss_equiv_V_per_pC_per_m_per_m']
         if np.any(np.isfinite(offset)):
             lines.append(f"  median offset-equivalent     = {np.nanmedian(offset):.12e} V/pC/m/m")
@@ -770,7 +765,7 @@ def analyse_crossing(
     for name, k in kicks.items():
         print(
             f"  {name:5s} kick = "
-            f"{k['kick_V_per_pC_per_m_per_m']:.6e} V/pC/m/m (U_CST, r->0 extrapolated); raw={k['kick_raw_V_per_C_per_m_per_m']:.6e} V/C/m/m"
+            f"{k['kick_V_per_pC_per_m_per_m']:.6e} V/pC/m/m (U_CST); raw={k['kick_raw_V_per_C_per_m_per_m']:.6e} V/C/m/m"
         )
 
     return analysis

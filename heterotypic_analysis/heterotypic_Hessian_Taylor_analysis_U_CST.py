@@ -480,7 +480,12 @@ class FieldAnalysisConfig:
     radius_m: float | None = None
     design_length_m: float | None = None
     beta: float = 1.0
-    fit_pixels: int = 8
+    # Backwards-compatible default fit radius.  The analysis now uses separate
+    # Taylor windows for dipole-like and quadrupole-like quantities because the
+    # validated finite-radius convergence differs by multipole order.
+    fit_pixels: int = 4
+    fit_pixels_dipole: int = 4
+    fit_pixels_quadrupole: int = 8
     charge_C: float = 1.0
     centred_z: bool = False  # Method-2/monopole-aligned convention: z in [0,L], not [-L/2,L/2].
 
@@ -552,8 +557,41 @@ def analyse_field_Ez(
         beta=config.beta,
         centred_z=config.centred_z,
     )
-    fit = fit_near_axis_voltage_taylor(Vz_xy, x_m, y_m, fit_pixels=config.fit_pixels)
-    fom = figures_of_merit_from_taylor(fit, frequency_Hz=frequency_Hz, charge_C=config.charge_C)
+    # Use separate, validated finite windows for different Taylor orders:
+    #   * dipole-like kick terms from the linear coefficients: fit_pixels_dipole=4
+    #   * quadrupole-like focusing terms from the quadratic coefficients: fit_pixels_quadrupole=8
+    # The returned figures_of_merit dictionary keeps the same public keys as before,
+    # but its kick entries come from the dipole fit and its K entries from the
+    # quadrupole fit.
+    fit_dipole = fit_near_axis_voltage_taylor(
+        Vz_xy, x_m, y_m, fit_pixels=config.fit_pixels_dipole
+    )
+    fit_quadrupole = fit_near_axis_voltage_taylor(
+        Vz_xy, x_m, y_m, fit_pixels=config.fit_pixels_quadrupole
+    )
+
+    fom_dipole = figures_of_merit_from_taylor(
+        fit_dipole, frequency_Hz=frequency_Hz, charge_C=config.charge_C
+    )
+    fom_quadrupole = figures_of_merit_from_taylor(
+        fit_quadrupole, frequency_Hz=frequency_Hz, charge_C=config.charge_C
+    )
+
+    fom = dict(fom_dipole)
+    for key in (
+        "bxx_V_per_C_per_m2",
+        "bxy_V_per_C_per_m2",
+        "byy_V_per_C_per_m2",
+        "Kxx_V_per_C_per_m_per_m",
+        "Kxy_V_per_C_per_m_per_m",
+        "Kyx_V_per_C_per_m_per_m",
+        "Kyy_V_per_C_per_m_per_m",
+        "quadrupole_matrix_norm_V_per_C_per_m_per_m",
+        "normal_quadrupole_longitudinal_V_per_C_per_m2",
+        "skew_quadrupole_longitudinal_V_per_C_per_m2",
+        "quadrupole_orientation_deg_from_real_coeffs",
+    ):
+        fom[key] = fom_quadrupole[key]
 
     ix0, iy0 = nx // 2, ny // 2
     V_axis = Vz_xy[ix0, iy0] / config.charge_C
@@ -592,7 +630,14 @@ def analyse_field_Ez(
         "centred_z": bool(config.centred_z),
         "Vz_axis_complex_V_per_C": V_axis,
         "Vz_axis_abs_V_per_C": float(abs(V_axis)),
-        "fit": fit,
+        # Backwards-compatible alias: the main dipole/loss fit.
+        "fit": fit_dipole,
+        "fit_dipole": fit_dipole,
+        "fit_quadrupole": fit_quadrupole,
+        "fit_pixels_used": {
+            "dipole": int(config.fit_pixels_dipole),
+            "quadrupole": int(config.fit_pixels_quadrupole),
+        },
         "figures_of_merit": fom,
         "energy_diagnostics": energy,
         "kparallel_diagnostics": k_diagnostics,
@@ -757,6 +802,8 @@ def write_summary_txt(result: dict[str, Any], filename: str | Path) -> None:
     lines.append("ANALYSIS CONFIGURATION")
     lines.append(f"  beta                         = {cfg.get('beta')}")
     lines.append(f"  fit_pixels                   = {cfg.get('fit_pixels')}")
+    lines.append(f"  fit_pixels_dipole            = {cfg.get('fit_pixels_dipole', cfg.get('fit_pixels'))}")
+    lines.append(f"  fit_pixels_quadrupole        = {cfg.get('fit_pixels_quadrupole', cfg.get('fit_pixels'))}")
     lines.append(f"  charge_C                     = {cfg.get('charge_C')}")
     lines.append(f"  centred_z                    = {cfg.get('centred_z')}  (False means z in [0,L]; True means z in [-L/2,L/2])")
     lines.append("  primary stored energy U      = U_CST_equiv = 0.5 eps0 int|E|^2 dV")
@@ -782,6 +829,8 @@ def write_summary_txt(result: dict[str, Any], filename: str | Path) -> None:
         field = result["fields"][name]
         fa = field["figures_of_merit"]
         fit = field["fit"]
+        fit_dipole = field.get("fit_dipole", fit)
+        fit_quadrupole = field.get("fit_quadrupole", fit)
         en = field.get("energy_diagnostics", {})
         kp = field.get("kparallel_diagnostics", {})
 
@@ -831,10 +880,14 @@ def write_summary_txt(result: dict[str, Any], filename: str | Path) -> None:
         lines.append(f"    U_CST |K|_F^2/(4U)          = {fa.get('quadrupole_matrix_norm_V_per_pC_per_m3', float('nan')):.12e} V/pC/m^3")
         lines.append(f"    Kxx,Kxy,Kyy raw magnitudes  = {abs(fa['Kxx_V_per_C_per_m_per_m']):.12e}, {abs(fa['Kxy_V_per_C_per_m_per_m']):.12e}, {abs(fa['Kyy_V_per_C_per_m_per_m']):.12e}")
         lines.append(f"    Kxx,Kxy,Kyy reported        = {abs(fa.get('Kxx_V_per_pC_per_m3', float('nan'))):.12e}, {abs(fa.get('Kxy_V_per_pC_per_m3', float('nan'))):.12e}, {abs(fa.get('Kyy_V_per_pC_per_m3', float('nan'))):.12e} V/pC/m^3")
-        lines.append(f"    fit relative RMS            = {fit['relative_rms_residual']:.12e}")
-        lines.append(f"    fit n_points/rank           = {fit['n_points']} / {fit['rank']}")
-        lines.append(f"    fit x_range_m               = {fit['x_fit_range_m']}")
-        lines.append(f"    fit y_range_m               = {fit['y_fit_range_m']}")
+        lines.append(f"    dipole fit relative RMS     = {fit_dipole['relative_rms_residual']:.12e}")
+        lines.append(f"    dipole fit n_points/rank    = {fit_dipole['n_points']} / {fit_dipole['rank']}")
+        lines.append(f"    dipole fit x_range_m        = {fit_dipole['x_fit_range_m']}")
+        lines.append(f"    dipole fit y_range_m        = {fit_dipole['y_fit_range_m']}")
+        lines.append(f"    quadrupole fit relative RMS = {fit_quadrupole['relative_rms_residual']:.12e}")
+        lines.append(f"    quadrupole fit n_points/rank= {fit_quadrupole['n_points']} / {fit_quadrupole['rank']}")
+        lines.append(f"    quadrupole fit x_range_m    = {fit_quadrupole['x_fit_range_m']}")
+        lines.append(f"    quadrupole fit y_range_m    = {fit_quadrupole['y_fit_range_m']}")
         lines.append("")
 
     lines.append("Enhancement relative to max(parent), using existing non-U-normalised magnitudes:")
@@ -959,7 +1012,9 @@ if __name__ == "__main__":
 
     cfg = FieldAnalysisConfig(
         f_010=1.3e9,
-        fit_pixels=8,
+        fit_pixels=4,
+        fit_pixels_dipole=4,
+        fit_pixels_quadrupole=8,
         charge_C=1.0,
     )
     analyse_all_heterotypic_crossings(

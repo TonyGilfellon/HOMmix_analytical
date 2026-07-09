@@ -588,11 +588,14 @@ def kick_from_Ez_field(
 
     Reported primary kick factor:
 
-        k_perp = lim_{r->0} (c/omega)|V_z(r)|^2/(4 U_CST r^2)
+        k_perp = |(c/omega) dVz/dr|^2/(4 U_CST)
 
-    evaluated by fitting k_perp(r) versus r^2 over several small offsets and
-    taking the intercept.  The older PW-gradient value is still stored under
-    explicit ``kick_pw_fit_*`` diagnostic keys.
+    where dVz/dr is obtained from a least-squares linear fit over the finite
+    near-axis window set by ``fit_pixels``.  With fit_pixels=8 this uses the
+    same transverse radius as the heterotypic Taylor/Hessian workflow.
+
+    The r->0 extrapolated off-axis loss-factor estimate is retained only as a
+    diagnostic under explicit ``kick_extrapolated_*`` keys.
     """
     # Backwards-compatible support for the old positional Ez-only signature:
     # kick_from_Ez_field(Ez, f_010, f_mnp, l_factor, Req_m, ...)
@@ -699,6 +702,13 @@ def kick_from_Ez_field(
             loss_U_norm_V_per_pC=loss_U_norm_V_per_C * PC,
             dVz_dr=dVz_dr,
             dVz_dr_local=dVz_dr_local,
+            # Primary stored/reported values: finite-window PW-gradient fit.
+            kick_raw_V_per_C_per_m_per_m=kick_pw_fit_raw,
+            kick_U_norm_V_per_C_per_m_per_m=kick_pw_fit_U,
+            kick_U_norm_V_per_pC_per_m_per_m=kick_pw_fit_U * PC,
+            kick_V_per_C_per_m_per_m=kick_pw_fit_U,
+            kick_V_per_pC_per_m_per_m=kick_pw_fit_U * PC,
+            # Explicit PW-gradient diagnostic aliases.
             kick_pw_fit_raw_V_per_C_per_m_per_m=kick_pw_fit_raw,
             kick_pw_fit_U_norm_V_per_C_per_m_per_m=kick_pw_fit_U,
             kick_pw_fit_U_norm_V_per_pC_per_m_per_m=kick_pw_fit_U * PC,
@@ -834,11 +844,12 @@ def kick_from_Ez_field(
         "dVz_dr_V_per_m": dVz_dr,
         "dVz_dr_local_V_per_m": dVz_dr_local,
         "Vperp_per_m_offset_V_per_m": Vperp_per_m_offset,
-        # Primary reported value: r -> 0 extrapolated off-axis loss-factor kick.
-        "kick_raw_V_per_C_per_m_per_m": kick_extrapolated_raw,
-        "kick_V_per_C_per_m_per_m": kick_extrapolated_U,
-        "kick_V_per_pC_per_m_per_m": kick_extrapolated_U * PC,
-        # Explicit legacy/PW-gradient diagnostics retained for traceability.
+        # Primary reported value: finite-window PW-gradient fit using the
+        # same fit_pixels radius as the heterotypic Taylor/Hessian workflow.
+        "kick_raw_V_per_C_per_m_per_m": kick_pw_fit_raw,
+        "kick_V_per_C_per_m_per_m": kick_pw_fit_U,
+        "kick_V_per_pC_per_m_per_m": kick_pw_fit_U * PC,
+        # Explicit PW-gradient aliases retained for traceability.
         "kick_pw_fit_raw_V_per_C_per_m_per_m": kick_pw_fit_raw,
         "kick_pw_fit_V_per_C_per_m_per_m": kick_pw_fit_U,
         "kick_pw_fit_V_per_pC_per_m_per_m": kick_pw_fit_U * PC,
@@ -862,7 +873,7 @@ def kick_from_Ez_field(
         "f_mnp_Hz": float(f_mnp),
         "omega_rad_s": omega,
         "centre_z": bool(centre_z),
-        "normalisation": "U_CST = 0.5 eps0 integral |E|^2 dV; primary k_perp is r->0 extrapolation of (c/omega)|Vz(r)|^2/(4U_CST r^2)",
+        "normalisation": "U_CST = 0.5 eps0 integral |E|^2 dV; primary k_perp is finite-window PW gradient |(c/omega)dVz/dr|^2/(4U_CST), fit_pixels radius matched to heterotypic workflow",
     }
 
 

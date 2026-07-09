@@ -98,12 +98,14 @@ def prab_summary_pdf_path(row: dict, class_key: str, figs_dir: str = "figs") -> 
     Return the copied PRAB figure path, e.g.
         figs/homotypic_monopole_TM012_TM020_field_summary.pdf
         figs/homotypic_dipole_TM112_TM120_field_summary.pdf
-        figs/homotypic_quadrupole_TM212_TM220_field_summary.pdf
+        figs/homotypic_quadrupole_TM213_TM222_field_summary.pdf
+
+    Deliberately use a single underscore between the two mode names.  Do not use
+    the double-underscore convention used by some heterotypic scripts.
     """
     mode_i = row["mode_i"].replace("_", "")
     mode_j = row["mode_j"].replace("_", "")
     return f"{figs_dir}/homotypic_{class_key}_{mode_i}_{mode_j}_field_summary.pdf"
-
 
 def appendix_i_start() -> str:
     """
@@ -111,6 +113,8 @@ def appendix_i_start() -> str:
 
     Requires this in the main manuscript preamble:
         \\usepackage{lipsum}
+        \\usepackage{needspace}
+        \\usepackage{placeins}
     """
     return r"""
 \clearpage
@@ -120,7 +124,7 @@ def appendix_i_start() -> str:
 
 \lipsum[1-2]
 
-The tables report beam-dynamics metrics derived from the field distributions: longitudinal loss factor $k_{\parallel}$, dipole kick factor $k_{\perp}$, signed isotropic curvature $K_{\mathrm{iso}}$, scalar quadrupole strength $K_Q$, and signed quadrupole focusing terms $K_{xx}$, $K_{yy}$ and $K_{xy}$.
+The tables report beam-dynamics metrics derived from the field distributions: longitudinal loss factor $k_{\parallel}$ for monopole--monopole crossings, dipole kick factor $k_{\perp}$ for dipole--dipole crossings, and scalar quadrupole strength $K_Q$ for quadrupole--quadrupole crossings.  For the homotypic quadrupole cases, $K_Q$ is obtained from the azimuthal RF-multipole extraction and reported in the same $\mathrm{V/pC/m^3}$ normalisation used for the mode-mixing figures of merit.
 
 \clearpage
 """.strip()
@@ -325,19 +329,27 @@ def load_dipole_rows(di_path: str | Path) -> dict[str, dict]:
 def _focus_value(result: dict, key: str, *, signed: bool = True) -> float:
     """Return a quadrupole table value in V/pC/m^3.
 
-    New quadrupole analyses store signed, phase-aligned values for Kxx, Kyy,
-    Kxy and Kiso.  K_Q is a positive scalar strength.  Older outputs may only
-    contain raw V/C/m/m values; these are used as last-resort fallbacks.
+    The current homotypic quadrupole workflow reports only the positive scalar
+    strength K_Q from the Brett-style azimuthal RF-multipole extraction.  This
+    loader remains tolerant of older Hessian/signed-K outputs by accepting the
+    historical K_quad_strength aliases.
     """
-    per_pc_candidates = [
-        f"{key}_V_per_pC_per_m3",
-        f"{key}_V_per_pC_per_m_per_m_per_m",
-    ]
-    per_c_candidates = [
-        f"{key}_V_per_C_per_m3",
-        f"{key}_V_per_C_per_m_per_m",
-        key,
-    ]
+    alias_keys = [key]
+    if key == "K_Q":
+        alias_keys += ["KQ", "K_quad_strength", "K_quad"]
+
+    per_pc_candidates: list[str] = []
+    per_c_candidates: list[str] = []
+    for alias in alias_keys:
+        per_pc_candidates.extend([
+            f"{alias}_V_per_pC_per_m3",
+            f"{alias}_V_per_pC_per_m_per_m_per_m",
+            alias,
+        ])
+        per_c_candidates.extend([
+            f"{alias}_V_per_C_per_m3",
+            f"{alias}_V_per_C_per_m_per_m",
+        ])
 
     for candidate in per_pc_candidates:
         if candidate in result:
@@ -346,14 +358,10 @@ def _focus_value(result: dict, key: str, *, signed: bool = True) -> float:
 
     for candidate in per_c_candidates:
         if candidate in result:
-            # Last-resort legacy fallback.  If this is genuinely V/C, convert to
-            # V/pC by 1e-12.  If it is an old raw K, the value is only suitable
-            # for diagnostics; regenerate the quadrupole analysis for final tables.
             val = per_C_to_per_pC(result[candidate])
             return val if signed else abs(val)
 
     raise KeyError(f"Could not find {key} in quadrupole focusing result.")
-
 
 def _quadrupole_metric_values(focusing: dict, key: str, *, signed: bool) -> tuple[float, float, float, float]:
     return (
@@ -367,10 +375,10 @@ def load_quadrupole_rows(quad_path: str | Path) -> dict[str, dict]:
     """
     Load homotypic quadrupole crossing entries from all_crossing_analyses.pkl.
 
-    New outputs contain signed, phase-aligned Kxx, Kyy, Kxy and Kiso in
-    V/pC/m^3, plus positive K_Q.  The table reports these signed quantities so
-    monopole-like isotropic curvature and quadrupole-like anisotropy remain
-    distinguishable.
+    The homotypic quadrupole appendix now reports a single scalar row only:
+    K_Q in V/pC/m^3 for E1, E2, E+ and E-.  This matches the Brett-style
+    azimuthal RF-multipole quadrupole analysis while remaining compatible with
+    older outputs that stored K_Q under K_quad_strength.
     """
     data = pickle_load(Path(quad_path) / "all_crossing_analyses.pkl")
     items = data.values() if isinstance(data, dict) else data
@@ -380,39 +388,13 @@ def load_quadrupole_rows(quad_path: str | Path) -> dict[str, dict]:
         crossing, mode_i, mode_j = _crossing_metadata(item)
         focusing = item["focusing"]
 
-        metrics = []
-        for effect_key, effect_tex, signed in [
-            ("Kiso", r"$K_{\mathrm{iso}}$", True),
-            ("K_Q", r"$K_Q$", False),
-            ("Kxx", r"$K_{xx}$", True),
-            ("Kyy", r"$K_{yy}$", True),
-            ("Kxy", r"$K_{xy}$", True),
-        ]:
-            # Compatibility with earlier quadrupole output that used
-            # K_quad_strength rather than K_Q.
-            lookup_key = "K_quad_strength" if effect_key == "K_Q" and "K_Q_V_per_pC_per_m3" not in focusing["E1"] else effect_key
-
-            E1, E2, Eplus, Eminus = _quadrupole_metric_values(
-                focusing,
-                lookup_key,
-                signed=signed,
-            )
-
-            metrics.append(
-                {
-                    "metric": effect_tex,
-                    "effect": effect_tex,
-                    "units": r"$\mathrm{V/pC/m^3}$",
-                    "E1": E1,
-                    "E2": E2,
-                    "Eplus": Eplus,
-                    "Eminus": Eminus,
-                    "R_max": _ratio_max(Eplus, Eminus, E1, E2),
-                }
-            )
+        E1, E2, Eplus, Eminus = _quadrupole_metric_values(
+            focusing,
+            "K_Q",
+            signed=False,
+        )
 
         row_key = f"{mode_i}-{mode_j}"
-
         rows[row_key] = {
             "class_key": "quadrupole",
             "class_label": "quadrupole",
@@ -420,28 +402,47 @@ def load_quadrupole_rows(quad_path: str | Path) -> dict[str, dict]:
             "mode_j": mode_j,
             "length_factor": float(crossing["length_factor"]),
             "frequency_Hz": float(crossing["frequency_Hz"]),
-            "frequency_normalised": float(crossing["frequency_Hz"])/1.3e9,
-            "metrics": metrics,
+            "frequency_normalised": float(crossing["frequency_Hz"]) / 1.3e9,
+            "metrics": [
+                {
+                    "metric": r"$K_Q$",
+                    "effect": r"$K_Q$",
+                    "units": r"$\mathrm{V/pC/m^3}$",
+                    "E1": E1,
+                    "E2": E2,
+                    "Eplus": Eplus,
+                    "Eminus": Eminus,
+                    "R_max": _ratio_max(Eplus, Eminus, E1, E2),
+                }
+            ],
         }
 
     return rows
-
 
 # -----------------------------------------------------------------------------
 # LaTeX table and figure generation
 # -----------------------------------------------------------------------------
 
-def single_crossing_metric_table(row: dict) -> str:
-    """
-    Generic table for mono-, di- and quadrupole entries.
-
-    The title carries the mode names, length factor and normalised frequency.
-    The rows carry the metric values.
-    """
+def crossing_title(row: dict) -> str:
     mode_i = row["mode_i"]
     mode_j = row["mode_j"]
     class_label = row.get("class_label", row.get("class_key", "mode"))
+    return (
+        rf"Homotypic {class_label} crossing for ${latex_mode(mode_i)}$ and "
+        rf"${latex_mode(mode_j)}$, $\ell = {row['length_factor']:.4f}$, "
+        rf"$\hat{{f}} = {row['frequency_normalised']:.4f}$"
+    )
 
+
+def single_crossing_metric_table(row: dict, *, include_title: bool = True) -> str:
+    """
+    Generic table for mono-, di- and quadrupole entries.
+
+    For quadrupole pages, include_title=False is used so the heading can be
+    placed outside the centered table and wrapped with the table and figure.
+    This avoids the heading/table overlap seen when a long title is placed in
+    the center environment immediately above a ruledtabular.
+    """
     metric_rows = []
     for metric in row["metrics"]:
         metric_rows.append(
@@ -454,15 +455,19 @@ def single_crossing_metric_table(row: dict) -> str:
             rf"& {latex_ratio(metric['R_max'], 3)} \\"
         )
 
+    title_line = ""
+    if include_title:
+        title_line = rf"\textbf{{{crossing_title(row)}}}\\[0.45em]"
+
     return rf"""
 \begin{{center}}
 \small
-\renewcommand{{\arraystretch}}{{1.35}}
+\renewcommand{{\arraystretch}}{{1.25}}
 \setlength{{\tabcolsep}}{{4.5pt}}
-\textbf{{Homotypic {class_label} crossing for ${latex_mode(mode_i)}$ and ${latex_mode(mode_j)}$, $\ell = {row['length_factor']:.4f}$, $\hat{{f}} = {row['frequency_normalised']:.4f}$}}\\[0.15em]
+{title_line}
 \begin{{ruledtabular}}
 \begin{{tabular}}{{ccccccc}}
-Beam-dynamics metric & Units & $E_1$ & $E_2$ & $E_+$ & $E_-$ & $R_{{\max}}$ \\
+Metric & Units & $E_1$ & $E_2$ & $E_+$ & $E_-$ & $R_{{\max}}$ \\
 \hline
 {chr(10).join(metric_rows)}
 \end{{tabular}}
@@ -475,36 +480,85 @@ Beam-dynamics metric & Units & $E_1$ & $E_2$ & $E_+$ & $E_-$ & $R_{{\max}}$ \\
 def single_crossing_summary_figure(
     row: dict,
     image_width: str = "0.65\\textwidth",
+    *,
+    image_height: str | None = None,
 ) -> str:
     """
-    Include the single-page tall summary PDF generated by
-    save_four_slice_pdfs_and_merge().
+    Include the single-page summary PDF generated by save_four_slice_pdfs_and_merge().
     """
     pdf_path = prab_summary_pdf_path(row, class_key=row["class_key"])
 
+    if image_height is None:
+        include_opts = f"width={image_width}"
+    else:
+        include_opts = f"width={image_width},height={image_height},keepaspectratio"
+
     return rf"""
-\vspace{{-1.0em}}
 \begin{{center}}
-\includegraphics[width={image_width}]{{{pdf_path}}}
+\includegraphics[{include_opts}]{{{pdf_path}}}
 \end{{center}}
-\vspace{{-0.6em}}
 """.strip()
 
 
-def single_crossing_page(
-    row: dict,
-    clearpage: bool = True,
+def quadrupole_crossing_page(row: dict, clearpage: bool = True) -> str:
+    """
+    One homotypic quadrupole crossing per page.
 
-) -> str:
+    The heading, table and field-section PDF are kept in one samepage block.
+    A clearpage before the block gives it a fresh page; Needspace protects
+    against page breaks if the function is reused without the preceding clearpage.
+    """
+
+    title_tex = crossing_title(row)
+
+    table_tex = single_crossing_metric_table(row, include_title=False)
+
+    # figure_tex = single_crossing_summary_figure(
+    #     row=row,
+    #     image_width=r"0.98\textwidth",
+    #     image_height=r"0.48\textheight",
+    # )
+
+    figure_tex = single_crossing_summary_figure(
+        row=row,
+        image_width=r"\textwidth",
+        image_height=r"0.62\textheight",
+    )
+
+    page = rf"""
+\clearpage
+\Needspace{{0.92\textheight}}
+\begin{{samepage}}
+\noindent\textbf{{{title_tex}}}
+
+\vspace{{0.45em}}
+
+{table_tex}
+
+\vspace{{0.45em}}
+
+{figure_tex}
+\end{{samepage}}
+""".strip()
+
+    if clearpage:
+        page += "\n\n\\clearpage"
+
+    return page
+
+def single_crossing_page(row: dict, clearpage: bool = True) -> str:
     """
     One crossing per page: table first, then the summary PDF.
+    Quadrupoles use a tighter, non-overlapping samepage layout.
     """
     if row["class_key"] == "quadrupole":
-        image_width = "0.58\\textwidth"
-    elif row["class_key"] == "dipole":
+        return quadrupole_crossing_page(row=row, clearpage=clearpage)
+
+    if row["class_key"] == "dipole":
         image_width = "0.65\\textwidth"
     else:  # monopole
         image_width = "0.65\\textwidth"
+
     page = (
         single_crossing_metric_table(row)
         + "\n\n"

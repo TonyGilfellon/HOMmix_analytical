@@ -399,76 +399,6 @@ def stored_energy_from_Etotal_CST_equivalent(
     }
 
 
-
-
-def extrapolate_kick_to_axis_from_offsets(
-    r_m: np.ndarray,
-    kick_values: np.ndarray,
-    *,
-    max_degree: int = 2,
-) -> dict[str, float | int | np.ndarray]:
-    """Extrapolate k_perp(r) to r=0 using an even polynomial in r.
-
-    The off-axis loss-factor estimate
-
-        k_perp(r) = (c/omega) |V_z(r)|^2/(4 U r^2)
-
-    is only radius independent in the strict near-axis dipole limit.  For
-    higher radial-index modes the Bessel curvature makes k_perp(r) vary as
-    r^2, r^4, ... .  This helper fits
-
-        k_perp(r) = k0 + a2 r^2 + a4 r^4 + ...
-
-    and returns k0.  It accepts both positive and negative offsets and uses
-    all finite non-zero samples.
-    """
-    r = np.asarray(r_m, dtype=float)
-    y = np.asarray(kick_values, dtype=float)
-
-    finite = np.isfinite(r) & np.isfinite(y) & (np.abs(r) > 0.0)
-    if np.count_nonzero(finite) < 2:
-        return {
-            "k0": float("nan"),
-            "degree": 0,
-            "n_points": int(np.count_nonzero(finite)),
-            "coefficients": np.asarray([float("nan")]),
-            "fit_x_r2": np.asarray([], dtype=float),
-            "fit_y": np.asarray([], dtype=float),
-        }
-
-    x = r[finite] ** 2
-    yy = y[finite]
-
-    # Collapse duplicate +r/-r samples by averaging values at equal r^2.  This
-    # improves conditioning and makes the fit explicitly even.
-    xu = np.unique(x)
-    yu = np.asarray([float(np.mean(yy[np.isclose(x, xx, rtol=1e-12, atol=1e-30)])) for xx in xu])
-
-    degree = int(min(max_degree, max(0, len(xu) - 1)))
-    if degree <= 0:
-        k0 = float(np.mean(yu))
-        coeff = np.asarray([k0], dtype=float)
-    else:
-        coeff = np.polyfit(xu, yu, degree)
-        k0 = float(coeff[-1])
-
-    # A tiny negative intercept can occur from numerical noise; a genuinely
-    # negative kick factor is unphysical, so mark large negative fits as NaN.
-    if k0 < 0.0 and abs(k0) < 1e-12 * max(float(np.nanmax(np.abs(yu))), 1.0):
-        k0 = 0.0
-    elif k0 < 0.0:
-        k0 = float("nan")
-
-    return {
-        "k0": k0,
-        "degree": degree,
-        "n_points": int(len(xu)),
-        "coefficients": coeff,
-        "fit_x_r2": xu,
-        "fit_y": yu,
-    }
-
-
 def _write_kick_diagnostic_txt(
     filename: str | Path,
     *,
@@ -487,10 +417,6 @@ def _write_kick_diagnostic_txt(
     kick_U_norm_V_per_pC_per_m2: float,
     kick_loss_equiv_U_norm: np.ndarray,
     kick_loss_equiv_raw: np.ndarray,
-    kick_extrapolated_U_norm: float,
-    kick_extrapolated_raw: float,
-    extrapolation_degree: int,
-    extrapolation_n_points: int,
     energy: dict[str, float],
     transverse_pixel_m: float,
     longitudinal_pixel_m: float,
@@ -530,12 +456,6 @@ def _write_kick_diagnostic_txt(
     lines.append("")
     lines.append("OFFSET METHOD")
     lines.append("  k_perp(r) = |(c/omega) Vz(r)/r|^2/(4 U_CST)")
-    lines.append("  primary reported value is the r -> 0 intercept of k_perp(r) = k0 + a r^2 + b r^4")
-    lines.append(f"  extrapolation degree          = {extrapolation_degree}")
-    lines.append(f"  extrapolation points          = {extrapolation_n_points}")
-    lines.append(f"  extrapolated U-normalised     = {kick_extrapolated_U_norm:.12e} V/C/m/m")
-    lines.append(f"  extrapolated U-normalised     = {kick_extrapolated_U_norm * PC:.12e} V/pC/m/m")
-    lines.append(f"  extrapolated raw              = {kick_extrapolated_raw:.12e} V/C/m/m")
     finite = np.isfinite(kick_loss_equiv_U_norm)
     if np.any(finite):
         lines.append(f"  median U-normalised          = {np.nanmedian(kick_loss_equiv_U_norm):.12e} V/C/m/m")
@@ -588,11 +508,9 @@ def kick_from_Ez_field(
 
     Reported primary kick factor:
 
-        k_perp = lim_{r->0} (c/omega)|V_z(r)|^2/(4 U_CST r^2)
+        k_perp = |(c/omega) dVz/dr|^2 / (4 U_CST)
 
-    evaluated by fitting k_perp(r) versus r^2 over several small offsets and
-    taking the intercept.  The older PW-gradient value is still stored under
-    explicit ``kick_pw_fit_*`` diagnostic keys.
+    in V/C/m/m and V/pC/m/m.
     """
     # Backwards-compatible support for the old positional Ez-only signature:
     # kick_from_Ez_field(Ez, f_010, f_mnp, l_factor, Req_m, ...)
@@ -678,12 +596,6 @@ def kick_from_Ez_field(
     kick_loss_equiv_raw[nonzero] = (C0 / omega) * Vz_abs[nonzero] / np.abs(r[nonzero])
     kick_loss_equiv_U[nonzero] = kick_loss_equiv_raw[nonzero]**2 / (4.0 * U_CST_J)
 
-    extrap_U = extrapolate_kick_to_axis_from_offsets(r, kick_loss_equiv_U, max_degree=2)
-    kick_extrapolated_U = float(extrap_U["k0"])
-    kick_extrapolated_raw = float(np.sqrt(4.0 * U_CST_J * kick_extrapolated_U)) if np.isfinite(kick_extrapolated_U) else float("nan")
-
-    extrap_raw = extrapolate_kick_to_axis_from_offsets(r, kick_loss_equiv_raw, max_degree=2)
-
     if save_directory is not None:
         save_directory = Path(save_directory)
         save_directory.mkdir(parents=True, exist_ok=True)
@@ -708,15 +620,6 @@ def kick_from_Ez_field(
             kick_loss_equiv_raw_V_per_C_per_m_per_m=kick_loss_equiv_raw,
             kick_loss_equiv_U_norm_V_per_C_per_m_per_m=kick_loss_equiv_U,
             kick_loss_equiv_U_norm_V_per_pC_per_m_per_m=kick_loss_equiv_U * PC,
-            kick_extrapolated_U_norm_V_per_C_per_m_per_m=kick_extrapolated_U,
-            kick_extrapolated_U_norm_V_per_pC_per_m_per_m=kick_extrapolated_U * PC,
-            kick_extrapolated_raw_V_per_C_per_m_per_m=kick_extrapolated_raw,
-            kick_extrapolation_degree=int(extrap_U["degree"]),
-            kick_extrapolation_n_points=int(extrap_U["n_points"]),
-            kick_extrapolation_coefficients=np.asarray(extrap_U["coefficients"], dtype=float),
-            kick_extrapolation_r2_m2=np.asarray(extrap_U["fit_x_r2"], dtype=float),
-            kick_extrapolation_y_V_per_C_per_m_per_m=np.asarray(extrap_U["fit_y"], dtype=float),
-            kick_raw_extrapolation_coefficients=np.asarray(extrap_raw["coefficients"], dtype=float),
             U_CST_J=U_CST_J,
             int_Ex2_dV=energy["int_Ex2_dV"],
             int_Ey2_dV=energy["int_Ey2_dV"],
@@ -746,10 +649,6 @@ def kick_from_Ez_field(
             kick_U_norm_V_per_pC_per_m2=kick_pw_fit_U * PC,
             kick_loss_equiv_U_norm=kick_loss_equiv_U,
             kick_loss_equiv_raw=kick_loss_equiv_raw,
-            kick_extrapolated_U_norm=kick_extrapolated_U,
-            kick_extrapolated_raw=kick_extrapolated_raw,
-            extrapolation_degree=int(extrap_U["degree"]),
-            extrapolation_n_points=int(extrap_U["n_points"]),
             energy=energy,
             transverse_pixel_m=dr,
             longitudinal_pixel_m=L / (nz - 1),
@@ -812,7 +711,6 @@ def kick_from_Ez_field(
         ax.plot(r * 1e3, kick_pw_local_U * PC, "o-", label="PW local gradient")
         ax.plot(r * 1e3, kick_loss_equiv_U * PC, "s-", label=r"$V_z/r$ offset equivalent")
         ax.axhline(kick_pw_fit_U * PC, color="k", ls="--", alpha=0.6, label="PW linear fit")
-        ax.axhline(kick_extrapolated_U * PC, color="k", ls=":", alpha=0.8, label=r"$r\to0$ extrapolated")
         ax.axvline(0.0, color="k", alpha=0.3)
         ax.set_xlabel("Offset [mm]")
         ax.set_ylabel(r"Kick [$\mathrm{V/pC/m/m}$]")
@@ -834,35 +732,22 @@ def kick_from_Ez_field(
         "dVz_dr_V_per_m": dVz_dr,
         "dVz_dr_local_V_per_m": dVz_dr_local,
         "Vperp_per_m_offset_V_per_m": Vperp_per_m_offset,
-        # Primary reported value: r -> 0 extrapolated off-axis loss-factor kick.
-        "kick_raw_V_per_C_per_m_per_m": kick_extrapolated_raw,
-        "kick_V_per_C_per_m_per_m": kick_extrapolated_U,
-        "kick_V_per_pC_per_m_per_m": kick_extrapolated_U * PC,
-        # Explicit legacy/PW-gradient diagnostics retained for traceability.
-        "kick_pw_fit_raw_V_per_C_per_m_per_m": kick_pw_fit_raw,
-        "kick_pw_fit_V_per_C_per_m_per_m": kick_pw_fit_U,
-        "kick_pw_fit_V_per_pC_per_m_per_m": kick_pw_fit_U * PC,
+        "kick_raw_V_per_C_per_m_per_m": kick_pw_fit_raw,
+        "kick_V_per_C_per_m_per_m": kick_pw_fit_U,
+        "kick_V_per_pC_per_m_per_m": kick_pw_fit_U * PC,
         "kick_pw_local_raw_V_per_C_per_m_per_m": kick_pw_local_raw,
         "kick_pw_local_V_per_C_per_m_per_m": kick_pw_local_U,
         "kick_pw_local_V_per_pC_per_m_per_m": kick_pw_local_U * PC,
         "kick_loss_equiv_raw_V_per_C_per_m_per_m": kick_loss_equiv_raw,
         "kick_loss_equiv_V_per_C_per_m_per_m": kick_loss_equiv_U,
         "kick_loss_equiv_V_per_pC_per_m_per_m": kick_loss_equiv_U * PC,
-        "kick_extrapolated_V_per_C_per_m_per_m": kick_extrapolated_U,
-        "kick_extrapolated_V_per_pC_per_m_per_m": kick_extrapolated_U * PC,
-        "kick_extrapolated_raw_V_per_C_per_m_per_m": kick_extrapolated_raw,
-        "kick_extrapolation_degree": int(extrap_U["degree"]),
-        "kick_extrapolation_n_points": int(extrap_U["n_points"]),
-        "kick_extrapolation_coefficients": np.asarray(extrap_U["coefficients"], dtype=float),
-        "kick_extrapolation_r2_m2": np.asarray(extrap_U["fit_x_r2"], dtype=float),
-        "kick_extrapolation_y_V_per_C_per_m_per_m": np.asarray(extrap_U["fit_y"], dtype=float),
         "transverse_pixel_m": dr,
         "longitudinal_pixel_m": L / (nz - 1),
         "axis": axis,
         "f_mnp_Hz": float(f_mnp),
         "omega_rad_s": omega,
         "centre_z": bool(centre_z),
-        "normalisation": "U_CST = 0.5 eps0 integral |E|^2 dV; primary k_perp is r->0 extrapolation of (c/omega)|Vz(r)|^2/(4U_CST r^2)",
+        "normalisation": "U_CST = 0.5 eps0 integral |E|^2 dV; k_perp=|(c/omega)dVz/dr|^2/(4U_CST)",
     }
 
 
