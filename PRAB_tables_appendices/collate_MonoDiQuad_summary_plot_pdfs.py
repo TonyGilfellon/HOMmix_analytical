@@ -1,113 +1,52 @@
-from pathlib import Path
-import shutil
-
-
-def copy_homotypic_field_summary_pdfs(
-    analysis_root: str | Path = r"D:\PhD\HOMmix\HOMmix_analytical\analysis",
-    dest_dir: str | Path = r"D:\PhD\PRAB\figures",
-    *,
-    overwrite: bool = True,
-) -> dict[str, list[Path]]:
-    """
-    Copy merged field-summary PDFs from homotypic mono-, di- and quadrupole analyses
-    into a single PRAB figures folder.
-
-    Expected source pattern:
-        analysis_root/
-            homotypic_monopoles/
-                TM012_TM020/
-                    slice_summary_pdfs/
-                        TM012_TM020_field_summary.pdf
-
-            homotypic_dipoles/
-                TM112_TM120/
-                    slice_summary_pdfs/
-                        TM112_TM120_field_summary.pdf
-
-            homotypic_quadrupoles/
-                TM212_TM220/
-                    slice_summary_pdfs/
-                        TM212_TM220_field_summary.pdf
-
-    Destination filenames:
-        homotypic_monopole_TM012_TM020_field_summary.pdf
-        homotypic_dipole_TM112_TM120_field_summary.pdf
-        homotypic_quadrupole_TM212_TM220_field_summary.pdf
-    """
-
-    analysis_root = Path(analysis_root)
-    dest_dir = Path(dest_dir)
-    dest_dir.mkdir(parents=True, exist_ok=True)
-
-    class_dirs = {
-        "homotypic_monopole": analysis_root / "homotypic_monopoles",
-        "homotypic_dipole": analysis_root / "homotypic_dipoles",
-        "homotypic_quadrupole": analysis_root / "homotypic_quadrupoles",
-    }
-
-    copied: dict[str, list[Path]] = {label: [] for label in class_dirs}
-    missing_roots: list[Path] = []
-
-    for label, class_root in class_dirs.items():
-        if not class_root.exists():
-            missing_roots.append(class_root)
-            continue
-
-        for crossing_dir in sorted(class_root.glob("TM*_TM*")):
-            if not crossing_dir.is_dir():
-                continue
-
-            expected_pdf = (
-                crossing_dir
-                / "slice_summary_pdfs"
-                / f"{crossing_dir.name}_field_summary.pdf"
-            )
-
-            if not expected_pdf.exists():
-                print(f"Missing: {expected_pdf}")
-                continue
-
-            dest_pdf = dest_dir / f"{label}_{expected_pdf.name}"
-
-            if dest_pdf.exists() and not overwrite:
-                print(f"Exists, skipped: {dest_pdf}")
-                continue
-
-            shutil.copy2(expected_pdf, dest_pdf)
-            copied[label].append(dest_pdf)
-            print(f"Copied: {expected_pdf} -> {dest_pdf}")
-
-    if missing_roots:
-        print("\nMissing analysis folders:")
-        for p in missing_roots:
-            print(f"  {p}")
-
-    print("\nCopy summary:")
-    for label, paths in copied.items():
-        print(f"  {label}: {len(paths)} PDFs")
-
-    return copied
+from __future__ import annotations
 
 from pathlib import Path
-import shutil
 import re
+import shutil
 
 
-def _heterotypic_dest_name(label: str, src: Path) -> str:
+def _copy_file(
+    source: Path,
+    destination: Path,
+    *,
+    overwrite: bool,
+) -> bool:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    if destination.exists() and not overwrite:
+        print(f"Exists, skipped: {destination}")
+        return False
+
+    shutil.copy2(source, destination)
+    print(f"Copied: {source} -> {destination}")
+    return True
+
+
+def _homotypic_destination_name(
+    class_label: str,
+    crossing_dir: Path,
+) -> str:
+    """Return the PRAB filename for a unified homotypic crossing.
+
+    Example
+    -------
+    class_label = "homotypic_monopole"
+    crossing_dir.name = "TM012_TM021"
+
+    returns
+        homotypic_monopole_TM012_TM021_field_summary.pdf
     """
-    Convert, for example:
+    return (
+        f"{class_label}_{crossing_dir.name}_field_summary.pdf"
+    )
 
-        label:
-            heterotypic_monopole_dipole
 
-        src.name:
-            monopole_dipole__TM_032__TM_131__ell_0p77869379_field_summary.pdf
-
-    into:
-
-        heterotypic_monopole_dipole_TM_032__TM_131__field_summary.pdf
-    """
-    stem = src.stem
+def _heterotypic_destination_name(
+    class_label: str,
+    source: Path,
+) -> str:
+    """Remove the crossing-length string from heterotypic summary names."""
+    stem = source.stem
 
     pattern = (
         r"^(monopole_dipole|monopole_quadrupole|dipole_quadrupole)"
@@ -115,31 +54,64 @@ def _heterotypic_dest_name(label: str, src: Path) -> str:
         r"__(TM_\d+)"
         r"__ell_[^_]+_field_summary$"
     )
-
     match = re.match(pattern, stem)
 
     if match:
         pair_type, mode_i, mode_j = match.groups()
-        return f"heterotypic_{pair_type}_{mode_i}__{mode_j}__field_summary.pdf"
+        return (
+            f"heterotypic_{pair_type}_"
+            f"{mode_i}__{mode_j}__field_summary.pdf"
+        )
 
-    # Fallback: strip any __ell_... section if present.
-    stem_no_ell = re.sub(r"__ell_.*?_field_summary$", "__field_summary", stem)
-    if stem_no_ell != stem:
-        return f"{label}_{stem_no_ell}.pdf"
+    stem_without_ell = re.sub(
+        r"__ell_.*?_field_summary$",
+        "__field_summary",
+        stem,
+    )
+    if stem_without_ell != stem:
+        return f"{class_label}_{stem_without_ell}.pdf"
 
-    return f"{label}_{src.name}"
+    return f"{class_label}_{source.name}"
 
 
-def copy_all_summary_pdfs_to_prab_figures(
-    analysis_root: str | Path = r"D:\PhD\HOMmix\HOMmix_analytical\analysis",
-    dest_dir: str | Path = r"D:\PhD\PRAB\figures",
+def copy_all_summary_pdfs_to_prab_figs(
+    analysis_root: str | Path = (
+        r"D:\PhD\HOMmix\HOMmix_analytical\analysis"
+    ),
+    destination_dir: str | Path = r"D:\PhD\PRAB\figs",
     *,
     overwrite: bool = True,
 ) -> dict[str, list[Path]]:
+    """Copy and rename homotypic and heterotypic appendix summary PDFs.
 
+    Unified homotypic source layout
+    --------------------------------
+    analysis/
+        homotypic_rf_multipole/
+            monopole_monopole/
+                TM012_TM021/
+                    slice_summary_pdfs/
+                        TM012_TM021_field_summary.pdf
+            dipole_dipole/
+            quadrupole_quadrupole/
+
+    Destination examples
+    --------------------
+        homotypic_monopole_TM012_TM021_field_summary.pdf
+        homotypic_dipole_TM112_TM120_field_summary.pdf
+        homotypic_quadrupole_TM213_TM222_field_summary.pdf
+
+    Heterotypic source layout remains
+    ---------------------------------
+    analysis/
+        heterotypic_crossings/
+            monopole_dipole/
+            monopole_quadrupole/
+            dipole_quadrupole/
+    """
     analysis_root = Path(analysis_root)
-    dest_dir = Path(dest_dir)
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    destination_dir = Path(destination_dir)
+    destination_dir.mkdir(parents=True, exist_ok=True)
 
     copied: dict[str, list[Path]] = {
         "homotypic_monopole": [],
@@ -151,91 +123,124 @@ def copy_all_summary_pdfs_to_prab_figures(
     }
 
     # ------------------------------------------------------------------
-    # Homotypic summaries
+    # Unified homotypic summaries
     # ------------------------------------------------------------------
-    homotypic_dirs = {
-        "homotypic_monopole": analysis_root / "homotypic_monopoles",
-        "homotypic_dipole": analysis_root / "homotypic_dipoles",
-        "homotypic_quadrupole": analysis_root / "homotypic_quadrupoles",
+    homotypic_root = analysis_root / "homotypic_rf_multipole"
+    homotypic_directories = {
+        "homotypic_monopole": (
+            homotypic_root / "monopole_monopole"
+        ),
+        "homotypic_dipole": (
+            homotypic_root / "dipole_dipole"
+        ),
+        "homotypic_quadrupole": (
+            homotypic_root / "quadrupole_quadrupole"
+        ),
     }
 
-    for label, root in homotypic_dirs.items():
-        if not root.exists():
-            print(f"Missing: {root}")
+    for class_label, class_root in homotypic_directories.items():
+        if not class_root.exists():
+            print(f"Missing homotypic root: {class_root}")
             continue
 
-        for crossing_dir in sorted(root.glob("TM*_TM*")):
-            src = (
+        for crossing_dir in sorted(class_root.glob("TM*_TM*")):
+            if not crossing_dir.is_dir():
+                continue
+
+            source = (
                 crossing_dir
                 / "slice_summary_pdfs"
                 / f"{crossing_dir.name}_field_summary.pdf"
             )
 
-            if not src.exists():
-                print(f"Missing: {src}")
+            if not source.exists():
+                print(f"Missing homotypic summary: {source}")
                 continue
 
-            dst = dest_dir / f"{label}_{src.name}"
+            destination = (
+                destination_dir
+                / _homotypic_destination_name(
+                    class_label,
+                    crossing_dir,
+                )
+            )
 
-            if dst.exists() and not overwrite:
-                print(f"Exists, skipped: {dst}")
-                continue
-
-            shutil.copy2(src, dst)
-            copied[label].append(dst)
-            print(f"Copied: {src} -> {dst}")
+            if _copy_file(
+                source,
+                destination,
+                overwrite=overwrite,
+            ):
+                copied[class_label].append(destination)
 
     # ------------------------------------------------------------------
     # Heterotypic summaries
     # ------------------------------------------------------------------
-    heterotypic_root = analysis_root / "heterotypic_crossings"
-
-    heterotypic_dirs = {
-        "heterotypic_monopole_dipole": heterotypic_root / "monopole_dipole",
-        "heterotypic_monopole_quadrupole": heterotypic_root / "monopole_quadrupole",
-        "heterotypic_dipole_quadrupole": heterotypic_root / "dipole_quadrupole",
+    heterotypic_root = (
+        analysis_root / "heterotypic_crossings"
+    )
+    heterotypic_directories = {
+        "heterotypic_monopole_dipole": (
+            heterotypic_root / "monopole_dipole"
+        ),
+        "heterotypic_monopole_quadrupole": (
+            heterotypic_root / "monopole_quadrupole"
+        ),
+        "heterotypic_dipole_quadrupole": (
+            heterotypic_root / "dipole_quadrupole"
+        ),
     }
 
-    for label, root in heterotypic_dirs.items():
-        if not root.exists():
-            print(f"Missing: {root}")
+    for class_label, class_root in heterotypic_directories.items():
+        if not class_root.exists():
+            print(f"Missing heterotypic root: {class_root}")
             continue
 
-        for crossing_dir in sorted(root.iterdir()):
+        for crossing_dir in sorted(class_root.iterdir()):
             if not crossing_dir.is_dir():
                 continue
 
-            src_dir = crossing_dir / "slice_summary_pdfs"
-
-            if not src_dir.exists():
-                print(f"Missing: {src_dir}")
+            source_dir = crossing_dir / "slice_summary_pdfs"
+            if not source_dir.exists():
+                print(f"Missing heterotypic PDF folder: {source_dir}")
                 continue
 
-            pdfs = sorted(src_dir.glob("*_field_summary.pdf"))
-
+            pdfs = sorted(
+                source_dir.glob("*_field_summary.pdf")
+            )
             if not pdfs:
-                print(f"No summary PDF found in: {src_dir}")
+                print(
+                    f"No heterotypic summary PDF found in: "
+                    f"{source_dir}"
+                )
                 continue
 
-            for src in pdfs:
-                dst = dest_dir / _heterotypic_dest_name(label, src)
-
-                if dst.exists() and not overwrite:
-                    print(f"Exists, skipped: {dst}")
-                    continue
-
-                shutil.copy2(src, dst)
-                copied[label].append(dst)
-                print(f"Copied: {src} -> {dst}")
+            for source in pdfs:
+                destination = (
+                    destination_dir
+                    / _heterotypic_destination_name(
+                        class_label,
+                        source,
+                    )
+                )
+                if _copy_file(
+                    source,
+                    destination,
+                    overwrite=overwrite,
+                ):
+                    copied[class_label].append(destination)
 
     print("\nCopy summary:")
-    for label, paths in copied.items():
-        print(f"  {label}: {len(paths)} PDFs")
+    for class_label, paths in copied.items():
+        print(f"  {class_label}: {len(paths)} PDFs")
 
     return copied
 
+
 if __name__ == "__main__":
-
-
-    # copied = copy_homotypic_field_summary_pdfs()
-    copied = copy_all_summary_pdfs_to_prab_figures()
+    copy_all_summary_pdfs_to_prab_figs(
+        analysis_root=(
+            r"D:\PhD\HOMmix\HOMmix_analytical\analysis"
+        ),
+        destination_dir=r"D:\PhD\PRAB\figs",
+        overwrite=True,
+    )
