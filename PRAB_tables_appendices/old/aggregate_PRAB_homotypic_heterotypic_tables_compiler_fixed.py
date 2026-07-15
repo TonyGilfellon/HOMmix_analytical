@@ -766,40 +766,33 @@ def heterotypic_table(
             length_factor,
         )
 
-        for metric_index, metric_key in enumerate(
-            metric_keys
-        ):
-            metric = METRIC_INFO[metric_key]
-            values = field_metric_values(
-                result,
-                metric_key,
-            )
+        for metric_index, metric_key in enumerate(metric_keys):
 
-            # Repeat the crossing metadata on both rows. This is more robust
-            # than multirow and permits the table to split cleanly if changed
-            # to longtable later.
-            body.append(
-                " & ".join([
+            metric = METRIC_INFO[metric_key]
+            values = field_metric_values(result, metric_key)
+
+            if metric_index == 0:
+                prefix = [
                     latex_mode(mode_i),
                     latex_mode(mode_j),
-                    fmt_fixed(
-                        length_factor,
-                        3,
-                    ),
-                    fmt_fixed(
-                        frequency_normalised,
-                        3,
-                    ),
-                    metric["latex"],
-                    fmt_sci(values["E1"]),
-                    fmt_sci(values["E2"]),
-                    fmt_sci(values["minus"]),
-                    fmt_sci(values["plus"]),
-                    fmt_fixed(
-                        values["R_max"],
-                        3,
-                    ),
-                ])
+                    fmt_fixed(length_factor, 3),
+                    fmt_fixed(frequency_normalised, 3),
+                ]
+            else:
+                prefix = ["", "", "", ""]
+
+            body.append(
+                " & ".join(
+                    prefix
+                    + [
+                        metric["latex"],
+                        fmt_sci(values["E1"]),
+                        fmt_sci(values["E2"]),
+                        fmt_sci(values["minus"]),
+                        fmt_sci(values["plus"]),
+                        fmt_fixed(values["R_max"], 3),
+                    ]
+                )
                 + r" \\"
             )
 

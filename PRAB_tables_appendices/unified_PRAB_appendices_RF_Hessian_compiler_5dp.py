@@ -323,7 +323,7 @@ def load_heterotypic_hessian_results(
 METRIC_INFO: dict[str, dict[str, Any]] = {
     "K_parallel": {
         "latex": r"$K_{\parallel}$",
-        "units": r"$\mathrm{V/pC/m_z}$",
+        "units": r"$\mathrm{V/pC/m_{\parallel}}$",
         "required_m": 0,
         "explicit_key": "K_parallel_V_per_pC_per_m",
         "legacy_keys": (
@@ -332,7 +332,7 @@ METRIC_INFO: dict[str, dict[str, Any]] = {
     },
     "K_perp": {
         "latex": r"$K_{\perp}$",
-        "units": r"$\mathrm{V/pC/m_{\perp}/m_z}$",
+        "units": r"$\mathrm{V/pC/m_{\perp}/m_{\parallel}}$",
         "required_m": 1,
         "explicit_key": "K_perp_V_per_pC_per_m2",
         "legacy_keys": (
@@ -342,7 +342,7 @@ METRIC_INFO: dict[str, dict[str, Any]] = {
     },
     "K_Q": {
         "latex": r"$K_Q$",
-        "units": r"$\mathrm{V/pC/m_{\perp}^{2}/m_z}$",
+        "units": r"$\mathrm{V/pC/m_{\perp}^{2}/m_{\parallel}}$",
         "required_m": 2,
         "explicit_key": "K_Q_V_per_pC_per_m3",
         "legacy_keys": (
