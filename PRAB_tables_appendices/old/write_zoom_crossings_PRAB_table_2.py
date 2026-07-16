@@ -39,7 +39,6 @@ import re
 from pathlib import Path
 from typing import Any, Iterable
 
-import matplotlib.pyplot as plt
 
 
 # -----------------------------------------------------------------------------
@@ -662,39 +661,42 @@ def sorted_results(
     )
 
 
+
 # -----------------------------------------------------------------------------
-# ell versus R_max plots
+# Zoom-region PRAB table configuration
 # -----------------------------------------------------------------------------
 
-HETEROTYPIC_PLOT_INFO: dict[str, dict[str, str]] = {
-    "monopole_dipole": {
-        "label": "M-D",
-        "marker": "o",
-    },
-    "monopole_quadrupole": {
-        "label": "M-Q",
-        "marker": "s",
-    },
-    "dipole_quadrupole": {
-        "label": "D-Q",
-        "marker": "^",
-    },
+DEFAULT_OUTPUT_TEX = DEFAULT_PRAB_ROOT / "zoom_crossings_PRAB_table.tex"
+
+# These limits must match the annotated ell-versus-R_max zoom figure.
+ZOOM_XMIN = 0.85
+ZOOM_XMAX = 1.15
+ZOOM_YMIN = 0.5
+ZOOM_YMAX = 5.0
+
+# A crossing is retained only when max(abs(E_minus), abs(E_plus)) is at least
+# the cut-off for the metric used to represent that crossing in the combined
+# homotypic-and-heterotypic plot.
+DEFAULT_METRIC_CUTOFFS: dict[str, float] = {
+    "K_parallel": 0.0,
+    "K_perp": 0.0,
+    "K_Q": 0.0,
 }
 
-HOMOTYPIC_PLOT_INFO: dict[int, dict[str, str]] = {
-    0: {"label": "M-M", "marker": "*"},
-    1: {"label": "D-D", "marker": "p"},
-    2: {"label": "Q-Q", "marker": "v"},
+HOMOTYPIC_TYPE_LABELS = {
+    0: "homotypic monopole--monopole",
+    1: "homotypic dipole--dipole",
+    2: "homotypic quadrupole--quadrupole",
 }
 
-METRIC_FILENAME = {
-    "K_parallel": "K_parallel",
-    "K_perp": "K_perp",
-    "K_Q": "K_Q",
+HETEROTYPIC_TYPE_LABELS = {
+    "monopole_dipole": "heterotypic monopole--dipole",
+    "monopole_quadrupole": "heterotypic monopole--quadrupole",
+    "dipole_quadrupole": "heterotypic dipole--quadrupole",
 }
 
 
-def _normalised_metric_cutoffs(
+def normalised_metric_cutoffs(
     metric_cutoffs: dict[str, float] | None,
 ) -> dict[str, float]:
     cutoffs = dict(DEFAULT_METRIC_CUTOFFS)
@@ -717,434 +719,309 @@ def _normalised_metric_cutoffs(
     return cutoffs
 
 
-def rmax_plot_point(
+def selected_metric_for_combined_plot(
     result: dict[str, Any],
-    metric_key: str,
     *,
-    metric_cutoff: float,
-) -> tuple[float, float] | None:
-    """Return (ell, R_max), applying the mixed-field metric cut-off."""
-    ell, _ = crossing_parameters(result)
+    population: str,
+) -> str:
+    """Return the metric used for this crossing in the combined plot."""
+    if population == "homotypic":
+        return homotypic_metric_key(result)
+    if population == "heterotypic":
+        # This intentionally matches the combined plot: the first applicable
+        # metric is used for each heterotypic pair type.
+        return heterotypic_metric_keys(pair_type_key(result))[0]
+    raise ValueError(f"Unsupported population: {population!r}")
+
+
+def zoom_table_record(
+    result: dict[str, Any],
+    *,
+    population: str,
+    cutoffs: dict[str, float],
+    xmin: float,
+    xmax: float,
+    ymin: float,
+    ymax: float,
+) -> dict[str, Any] | None:
+    metric_key = selected_metric_for_combined_plot(
+        result,
+        population=population,
+    )
     values = field_metric_values(result, metric_key)
+    ell, f_hat = crossing_parameters(result)
+    r_max = finite_or_nan(values["R_max"])
     mixed_maximum = max(
         abs_finite_or_nan(values["minus"]),
         abs_finite_or_nan(values["plus"]),
     )
-    r_max = finite_or_nan(values["R_max"])
 
     if (
         not math.isfinite(ell)
+        or not math.isfinite(f_hat)
         or not math.isfinite(r_max)
         or not math.isfinite(mixed_maximum)
-        or mixed_maximum < metric_cutoff
+        or mixed_maximum < cutoffs[metric_key]
+        or not (xmin <= ell <= xmax)
+        or not (ymin <= r_max <= ymax)
     ):
         return None
-    return ell, r_max
 
+    mode_i, mode_j = result_modes(result)
+    if population == "homotypic":
+        crossing_type = HOMOTYPIC_TYPE_LABELS[homotypic_family_m(result)]
+    else:
+        crossing_type = HETEROTYPIC_TYPE_LABELS[pair_type_key(result)]
 
-def _plot_hollow_markers(
-    ax: Any,
-    x_values: Iterable[float],
-    y_values: Iterable[float],
-    *,
-    marker: str,
-    label: str,
-    color: str,
-    markersize: float = 7.5,
-    markeredgewidth: float = 1.35,
-) -> None:
-    """Plot markers with no connecting line and no filled marker face."""
-    line_only_markers = {"+", "x", "1", "2", "3", "4", "|", "_"}
-    kwargs: dict[str, Any] = {
-        "linestyle": "none",
-        "marker": marker,
-        "label": label,
-        "markersize": markersize,
-        "markeredgewidth": markeredgewidth,
-        "markeredgecolor": color,
-        "alpha": 0.95,
-        "zorder": 3,
+    return {
+        "population": population,
+        "crossing_type": crossing_type,
+        "mode_i": mode_i,
+        "mode_j": mode_j,
+        "ell": ell,
+        "f_hat": f_hat,
+        "metric_key": metric_key,
+        "E1": values["E1"],
+        "E2": values["E2"],
+        "minus": values["minus"],
+        "plus": values["plus"],
+        "R_max": r_max,
+        "mixed_maximum": mixed_maximum,
     }
-    if marker not in line_only_markers:
-        kwargs["markerfacecolor"] = "none"
-        kwargs["fillstyle"] = "none"
-    ax.plot(list(x_values), list(y_values), **kwargs)
 
 
-def _scatter_result_group(
-    ax: Any,
-    results: Iterable[dict[str, Any]],
-    metric_key: str,
-    *,
-    metric_cutoff: float,
-    marker: str,
-    label: str,
-    color: str | None = None,
-) -> int:
-    points = [
-        point
-        for result in results
-        if (point := rmax_plot_point(
-            result,
-            metric_key,
-            metric_cutoff=metric_cutoff,
-        )) is not None
-    ]
-    points.sort(key=lambda point: point[0])
-    if not points:
-        return 0
-
-    x_values, y_values = zip(*points)
-    resolved_color = color or ax._get_lines.get_next_color()
-    _plot_hollow_markers(
-        ax,
-        x_values,
-        y_values,
-        marker=marker,
-        label=label,
-        color=resolved_color,
-        markersize=7.5,
-        markeredgewidth=1.35,
-    )
-    return len(points)
-
-
-def _finish_rmax_plot(
-    fig: Any,
-    ax: Any,
-    *,
-    title: str,
-    output_file: Path,
-    show_legend: bool,
-    dpi: int,
-    y_scale: str,
-) -> Path:
-    if y_scale not in {"linear", "log"}:
-        raise ValueError(f"Unsupported y-axis scale: {y_scale!r}")
-
-    ax.set_xlabel(r"$\ell$")
-    ax.set_ylabel(r"$R_{\max}$")
-    ax.set_title(title)
-    ax.set_yscale(y_scale)
-    ax.axhline(
-        1.0,
-        color="red",
-        linestyle="--",
-        linewidth=1.2,
-        label=r"$R_{\max}=1$",
-        zorder=1,
-    )
-    ax.grid(True, which="both", alpha=0.3)
-    if show_legend:
-        if y_scale == "log":
-            ax.legend(
-                loc="lower right",
-                frameon=True,
-                framealpha=1.0,
-                facecolor="white",
-                edgecolor="black",
-            )
-        else:
-            ax.legend()
-    fig.tight_layout()
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_file, bbox_inches="tight", dpi=dpi, format="png")
-    plt.close(fig)
-    print(f"Wrote: {output_file}")
-    return output_file
-
-
-
-def _write_annotated_combined_zoom_plot(
+def collect_zoom_table_records(
     *,
     homotypic_results: list[dict[str, Any]],
     heterotypic_results: list[dict[str, Any]],
     cutoffs: dict[str, float],
-    output_root: Path,
-    dpi: int,
-) -> Path:
-    """Write the annotated linear-scale zoom of the combined data set."""
-    family_metric = {0: "K_parallel", 1: "K_perp", 2: "K_Q"}
-    homotypic_colour = "#2A6FBB"
-    heterotypic_colour = "#E07A1F"
+    xmin: float,
+    xmax: float,
+    ymin: float,
+    ymax: float,
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
 
-    groups: list[tuple[list[dict[str, Any]], str, str, str, str]] = []
-    for family_m, info in HOMOTYPIC_PLOT_INFO.items():
-        groups.append((
-            [r for r in homotypic_results if homotypic_family_m(r) == family_m],
-            family_metric[family_m],
-            info["marker"],
-            f"{info['label']}",
-            homotypic_colour,
-        ))
-    for pair_type, info in HETEROTYPIC_PLOT_INFO.items():
-        # Match the metric selection used by the full combined figure.
-        groups.append((
-            [r for r in heterotypic_results if pair_type_key(r) == pair_type],
-            heterotypic_metric_keys(pair_type)[0],
-            info["marker"],
-            f"{info['label']}",
-            heterotypic_colour,
-        ))
+    for result in homotypic_results:
+        record = zoom_table_record(
+            result,
+            population="homotypic",
+            cutoffs=cutoffs,
+            xmin=xmin,
+            xmax=xmax,
+            ymin=ymin,
+            ymax=ymax,
+        )
+        if record is not None:
+            records.append(record)
 
-    fig, ax = plt.subplots(figsize=(10.0, 7.2))
-    total_plotted = 0
+    for result in heterotypic_results:
+        record = zoom_table_record(
+            result,
+            population="heterotypic",
+            cutoffs=cutoffs,
+            xmin=xmin,
+            xmax=xmax,
+            ymin=ymin,
+            ymax=ymax,
+        )
+        if record is not None:
+            records.append(record)
 
-    for results, metric_key, marker, label, color in groups:
-        selected: list[tuple[dict[str, Any], float, float]] = []
-        for result in results:
-            point = rmax_plot_point(
-                result,
-                metric_key,
-                metric_cutoff=cutoffs[metric_key],
-            )
-            if point is None:
-                continue
-            ell, r_max = point
-            if 0.85 <= ell <= 1.15 and 1.0 <= r_max <= 10.0:
-                selected.append((result, ell, r_max))
+    return sorted(
+        records,
+        key=lambda row: (
+            row["ell"],
+            row["R_max"],
+            row["population"],
+            row["mode_i"],
+            row["mode_j"],
+        ),
+    )
 
-        if not selected:
-            continue
 
-        x_values = [item[1] for item in selected]
-        y_values = [item[2] for item in selected]
-        _plot_hollow_markers(
-            ax,
-            x_values,
-            y_values,
-            marker=marker,
-            label=label,
-            color=color,
-            markersize=12.0,
-            markeredgewidth=1.4,
+def latex_crossing_type(text: str) -> str:
+    return text.replace("--", r"--")
+
+
+def build_zoom_prab_longtable(
+    records: list[dict[str, Any]],
+    *,
+    xmin: float,
+    xmax: float,
+    ymin: float,
+    ymax: float,
+    cutoffs: dict[str, float],
+) -> str:
+    body: list[str] = []
+
+    for row in records:
+        metric = METRIC_INFO[row["metric_key"]]
+        body.append(
+            " & ".join([
+                latex_crossing_type(row["crossing_type"]),
+                latex_mode(row["mode_i"]),
+                latex_mode(row["mode_j"]),
+                fmt_fixed(row["ell"], 4),
+                fmt_fixed(row["f_hat"], 4),
+                metric["latex"],
+                fmt_sci(row["E1"]),
+                fmt_sci(row["E2"]),
+                fmt_sci(row["minus"]),
+                fmt_sci(row["plus"]),
+                fmt_fixed(row["R_max"], 3),
+            ]) + r" \\" 
         )
 
-        for result, ell, r_max in selected:
-            mode_i, mode_j = result_modes(result)
-            annotation = f"{latex_mode(mode_i)}\n{latex_mode(mode_j)}"
-            ax.annotate(
-                annotation,
-                xy=(ell, r_max),
-                xytext=(4, 4),
-                textcoords="offset points",
-                fontsize=12,
-                ha="left",
-                va="bottom",
-                annotation_clip=True,
-                zorder=4,
-            )
-        total_plotted += len(selected)
+    if not body:
+        body.append(
+            "-- & -- & -- & -- & -- & -- & -- & -- & -- & -- & --"
+            + r" \\" 
+        )
 
-    xmin=0.85
-    xmax=1.15
-    ymin=0.5
-    ymax=5.0
-    ax.set_xlim(xmin, xmax)
-    ax.set_ylim(ymin, ymax)
-    ax.set_yscale("linear")
-    ax.set_xlabel(r"$\ell$", fontsize=20)
-    ax.set_ylabel(r"$R_{\max}$", fontsize=20)
-    # ax.set_title(
-    #     r"Homotypic and heterotypic crossings: annotated zoom "
-    #     f"({xmin}"r"$\leq\ell\leq$"f"{xmax}, {ymin}"r"$\leq R_{\max}\leq$"f"{ymax})"
-    # )
-    ax.axhline(
-        1.0,
-        color="red",
-        linestyle="--",
-        linewidth=1.2,
-        label=r"$R_{\max}=1$",
-        zorder=1,
+    cutoff_text = (
+        rf"$K_{{\parallel}}\geq {fmt_sci(cutoffs['K_parallel']).strip('$')}$, "
+        rf"$K_{{\perp}}\geq {fmt_sci(cutoffs['K_perp']).strip('$')}$, and "
+        rf"$K_Q\geq {fmt_sci(cutoffs['K_Q']).strip('$')}$"
     )
-    ax.grid(True, which="both", alpha=0.3)
-    ax.legend(
-        loc="best",
-        frameon=True,
-        framealpha=1.0,
-        facecolor="white",
-        edgecolor="black",
-        fontsize=12,
-    )
-    fig.tight_layout()
 
-    output_file = (
-        output_root
-        / "homotypic_and_heterotypic_ell_vs_Rmax_annotated_zoom_linear.png"
+    caption = (
+        "Homotypic and heterotypic crossings appearing in the annotated "
+        rf"$\ell$--$R_{{\max}}$ zoom, with "
+        rf"${xmin:.2f}\leq\ell\leq{xmax:.2f}$ and "
+        rf"${ymin:.2f}\leq R_{{\max}}\leq{ymax:.2f}$. "
+        "Each crossing is evaluated using the same family-specific metric "
+        "used in the combined plot. The mixed-field values must satisfy the "
+        rf"configured cut-offs: {cutoff_text}."
     )
-    output_file.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_file, bbox_inches="tight", dpi=dpi, format="png")
-    plt.close(fig)
-    print(f"Wrote: {output_file}")
-    print(
-        "  plotted annotated zoom points: "
-        f"{total_plotted}; cut-off=family-specific; y-scale=linear"
-    )
-    return output_file
 
-def write_ell_vs_rmax_plots(
+    return rf"""
+\begingroup
+\small
+\setlength{{\LTleft}}{{0pt}}
+\setlength{{\LTright}}{{0pt}}
+\setlength{{\tabcolsep}}{{2.7pt}}
+\renewcommand{{\arraystretch}}{{1.08}}
+\begin{{longtable}}{{@{{}}lcccccccccc@{{}}}}
+\caption{{{caption}}}
+\label{{tab:zoom_crossings_ell_Rmax}}\\
+\hline
+Crossing type
+& Mode 1
+& Mode 2
+& $\ell$
+& $\hat{{f}}$
+& Metric
+& $E_1$
+& $E_2$
+& $E_-$
+& $E_+$
+& $R_{{\max}}$ \\
+\hline
+\endfirsthead
+
+\multicolumn{{11}}{{c}}{{\tablename\ \thetable{{}} continued}}\\
+\hline
+Crossing type
+& Mode 1
+& Mode 2
+& $\ell$
+& $\hat{{f}}$
+& Metric
+& $E_1$
+& $E_2$
+& $E_-$
+& $E_+$
+& $R_{{\max}}$ \\
+\hline
+\endhead
+
+\hline
+\multicolumn{{11}}{{r}}{{Continued on next page}}\\
+\endfoot
+
+\hline
+\endlastfoot
+
+{chr(10).join(body)}
+\end{{longtable}}
+\renewcommand{{\arraystretch}}{{1.0}}
+\endgroup
+""".strip()
+
+
+def write_zoom_crossings_prab_table(
     *,
     homotypic_root_or_pickle: str | Path = DEFAULT_HOMOTYPIC_ROOT,
     heterotypic_root_or_pickle: str | Path = DEFAULT_HETEROTYPIC_ROOT,
-    output_root: str | Path = DEFAULT_RMAX_PLOT_ROOT,
+    output_tex: str | Path = DEFAULT_OUTPUT_TEX,
     metric_cutoffs: dict[str, float] | None = None,
-    y_scales: Iterable[str] = DEFAULT_Y_SCALES,
-    dpi: int = 300,
-) -> list[Path]:
-    """Write linear and/or logarithmic ell-versus-R_max PNG figures."""
-    cutoffs = _normalised_metric_cutoffs(metric_cutoffs)
+    xmin: float = ZOOM_XMIN,
+    xmax: float = ZOOM_XMAX,
+    ymin: float = ZOOM_YMIN,
+    ymax: float = ZOOM_YMAX,
+) -> Path:
+    if xmin > xmax:
+        raise ValueError("xmin must not exceed xmax.")
+    if ymin > ymax:
+        raise ValueError("ymin must not exceed ymax.")
+
+    cutoffs = normalised_metric_cutoffs(metric_cutoffs)
     homotypic_results = load_homotypic_results(homotypic_root_or_pickle)
     heterotypic_results = load_heterotypic_results(heterotypic_root_or_pickle)
-    output_root = Path(output_root)
 
-    scales = tuple(dict.fromkeys(str(scale).lower() for scale in y_scales))
-    if not scales:
-        raise ValueError("At least one y-axis scale must be selected.")
-    invalid = set(scales) - {"linear", "log"}
-    if invalid:
-        raise ValueError("Unsupported y-axis scale(s): " + ", ".join(sorted(invalid)))
-
-    written: list[Path] = []
-
-    def save_group(
-        *,
-        groups: list[tuple[list[dict[str, Any]], str, str, str | None]],
-        metric_key: str | None,
-        title: str,
-        output_stem: Path,
-        show_legend: bool,
-    ) -> None:
-        for y_scale in scales:
-            fig, ax = plt.subplots(figsize=(6.8, 5.0))
-            count = 0
-            for group_results, group_metric, marker, label_color in groups:
-                label, color = label_color.split("|||", 1) if label_color and "|||" in label_color else (label_color or "", None)
-                count += _scatter_result_group(
-                    ax,
-                    group_results,
-                    group_metric,
-                    metric_cutoff=cutoffs[group_metric],
-                    marker=marker,
-                    label=label,
-                    color=color,
-                )
-            output_file = output_stem.with_name(f"{output_stem.name}_{y_scale}.png")
-            written.append(_finish_rmax_plot(
-                fig,
-                ax,
-                title=title,
-                output_file=output_file,
-                show_legend=show_legend,
-                dpi=dpi,
-                y_scale=y_scale,
-            ))
-            cutoff_text = cutoffs[metric_key] if metric_key else "family-specific"
-            print(f"  plotted points: {count}; cut-off={cutoff_text}; y-scale={y_scale}")
-
-    for pair_type, info in HETEROTYPIC_PLOT_INFO.items():
-        family_results = [r for r in heterotypic_results if pair_type_key(r) == pair_type]
-        for metric_key in heterotypic_metric_keys(pair_type):
-            save_group(
-                groups=[(family_results, metric_key, info["marker"], info["label"])],
-                metric_key=metric_key,
-                title=(rf"Heterotypic {info['label']}: $\ell$ versus $R_{{\max}}$ "
-                       rf"({METRIC_INFO[metric_key]['latex'].strip('$')})"),
-                output_stem=output_root / "heterotypic" /
-                    f"heterotypic_{pair_type}_ell_vs_Rmax_{METRIC_FILENAME[metric_key]}",
-                show_legend=False,
-            )
-
-    for metric_key in METRIC_INFO:
-        groups = []
-        for pair_type, info in HETEROTYPIC_PLOT_INFO.items():
-            if metric_key in heterotypic_metric_keys(pair_type):
-                family_results = [r for r in heterotypic_results if pair_type_key(r) == pair_type]
-                groups.append((family_results, metric_key, info["marker"], info["label"]))
-        save_group(
-            groups=groups,
-            metric_key=metric_key,
-            title=(rf"All heterotypic crossings: $\ell$ versus $R_{{\max}}$ "
-                   rf"({METRIC_INFO[metric_key]['latex'].strip('$')})"),
-            output_stem=output_root / "heterotypic" /
-                f"all_heterotypic_ell_vs_Rmax_{METRIC_FILENAME[metric_key]}",
-            show_legend=True,
-        )
-
-    family_metric = {0: "K_parallel", 1: "K_perp", 2: "K_Q"}
-    for family_m, info in HOMOTYPIC_PLOT_INFO.items():
-        metric_key = family_metric[family_m]
-        family_results = [r for r in homotypic_results if homotypic_family_m(r) == family_m]
-        save_group(
-            groups=[(family_results, metric_key, info["marker"], info["label"])],
-            metric_key=metric_key,
-            title=(rf"Homotypic {info['label']}: $\ell$ versus $R_{{\max}}$ "
-                   rf"({METRIC_INFO[metric_key]['latex'].strip('$')})"),
-            output_stem=output_root / "homotypic" /
-                f"homotypic_{info['label'].replace('--', '_')}_ell_vs_Rmax_{METRIC_FILENAME[metric_key]}",
-            show_legend=False,
-        )
-
-    homo_groups = []
-    for family_m, info in HOMOTYPIC_PLOT_INFO.items():
-        metric_key = family_metric[family_m]
-        homo_groups.append((
-            [r for r in homotypic_results if homotypic_family_m(r) == family_m],
-            metric_key,
-            info["marker"],
-            info["label"],
-        ))
-    save_group(
-        groups=homo_groups,
-        metric_key=None,
-        title=r"All homotypic crossings: $\ell$ versus $R_{\max}$",
-        output_stem=output_root / "homotypic" / "all_homotypic_ell_vs_Rmax",
-        show_legend=True,
-    )
-
-    homotypic_colour = "#2A6FBB"
-    heterotypic_colour = "#E07A1F"
-    combined_groups = []
-    for family_m, info in HOMOTYPIC_PLOT_INFO.items():
-        metric_key = family_metric[family_m]
-        combined_groups.append((
-            [r for r in homotypic_results if homotypic_family_m(r) == family_m],
-            metric_key,
-            info["marker"],
-            f"{info['label']}|||{homotypic_colour}",
-        ))
-    for pair_type, info in HETEROTYPIC_PLOT_INFO.items():
-        metric_key = heterotypic_metric_keys(pair_type)[0]
-        combined_groups.append((
-            [r for r in heterotypic_results if pair_type_key(r) == pair_type],
-            metric_key,
-            info["marker"],
-            f"{info['label']}|||{heterotypic_colour}",
-        ))
-    save_group(
-        groups=combined_groups,
-        metric_key=None,
-        # title=r"Homotypic and heterotypic crossings: $\ell$ versus $R_{\max}$",
-        title=r"",
-        output_stem=output_root / "homotypic_and_heterotypic_ell_vs_Rmax",
-        show_legend=True,
-    )
-
-    written.append(_write_annotated_combined_zoom_plot(
+    records = collect_zoom_table_records(
         homotypic_results=homotypic_results,
         heterotypic_results=heterotypic_results,
         cutoffs=cutoffs,
-        output_root=output_root,
-        dpi=dpi,
-    ))
-    return written
+        xmin=xmin,
+        xmax=xmax,
+        ymin=ymin,
+        ymax=ymax,
+    )
+
+    table_text = build_zoom_prab_longtable(
+        records,
+        xmin=xmin,
+        xmax=xmax,
+        ymin=ymin,
+        ymax=ymax,
+        cutoffs=cutoffs,
+    )
+
+    output_tex = Path(output_tex)
+    output_tex.parent.mkdir(parents=True, exist_ok=True)
+    output_tex.write_text(table_text + "\n", encoding="utf-8")
+
+    homotypic_count = sum(r["population"] == "homotypic" for r in records)
+    heterotypic_count = sum(r["population"] == "heterotypic" for r in records)
+    print(f"Wrote: {output_tex}")
+    print(
+        "Zoom limits: "
+        f"{xmin} <= ell <= {xmax}, "
+        f"{ymin} <= R_max <= {ymax}"
+    )
+    print(f"Crossings written: {len(records)}")
+    print(f"  homotypic: {homotypic_count}")
+    print(f"  heterotypic: {heterotypic_count}")
+    for metric_key in ("K_parallel", "K_perp", "K_Q"):
+        count = sum(r["metric_key"] == metric_key for r in records)
+        print(
+            f"  {metric_key}: {count}; "
+            f"cut-off={cutoffs[metric_key]}"
+        )
+
+    return output_tex
 
 
 if __name__ == "__main__":
-    write_ell_vs_rmax_plots(
+    write_zoom_crossings_prab_table(
         homotypic_root_or_pickle=DEFAULT_HOMOTYPIC_ROOT,
         heterotypic_root_or_pickle=DEFAULT_HETEROTYPIC_ROOT,
-        output_root=DEFAULT_RMAX_PLOT_ROOT,
+        output_tex=DEFAULT_OUTPUT_TEX,
         metric_cutoffs=DEFAULT_METRIC_CUTOFFS,
-        y_scales=DEFAULT_Y_SCALES,
-        dpi=300,
+        xmin=ZOOM_XMIN,
+        xmax=ZOOM_XMAX,
+        ymin=ZOOM_YMIN,
+        ymax=ZOOM_YMAX,
     )

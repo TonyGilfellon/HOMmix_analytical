@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import matplotlib.pyplot as plt
+import numpy as np
 
 
 # -----------------------------------------------------------------------------
@@ -77,6 +78,13 @@ DEFAULT_METRIC_CUTOFFS: dict[str, float] = {
 # Select one or both y-axis scales. Supported values: "linear" and "log".
 # Each scale is written to a separately named PNG file.
 DEFAULT_Y_SCALES: tuple[str, ...] = ("linear", "log")
+
+# Histogram configuration. HISTOGRAM_RMAX_SCALE controls the R_max axis
+# and may be "linear" or "log". Both homotypic and heterotypic data use
+# exactly the same bin edges.
+HISTOGRAM_RMAX_SCALE = "log"
+HISTOGRAM_N_BINS = 20
+HISTOGRAM_ALPHA = 0.45
 
 
 # -----------------------------------------------------------------------------
@@ -742,6 +750,43 @@ def rmax_plot_point(
     return ell, r_max
 
 
+def rtotal_plot_point(
+    result: dict[str, Any],
+    metric_key: str,
+    *,
+    metric_cutoff: float,
+) -> tuple[float, float] | None:
+    """Return (ell, R_total), applying the same mixed-field cut-off.
+
+    R_total = (K_plus + K_minus) / (K_1 + K_2), where K is the
+    family-specific beam-dynamics metric used for the combined plots.
+    """
+    ell, _ = crossing_parameters(result)
+    values = field_metric_values(result, metric_key)
+
+    k1 = abs_finite_or_nan(values["E1"])
+    k2 = abs_finite_or_nan(values["E2"])
+    k_minus = abs_finite_or_nan(values["minus"])
+    k_plus = abs_finite_or_nan(values["plus"])
+    mixed_maximum = max(k_minus, k_plus)
+
+    if (
+        not math.isfinite(ell)
+        or not all(math.isfinite(v) for v in (k1, k2, k_minus, k_plus))
+        or mixed_maximum < metric_cutoff
+    ):
+        return None
+
+    denominator = k1 + k2
+    if denominator <= 0.0:
+        return None
+
+    r_total = (k_plus + k_minus) / denominator
+    if not math.isfinite(r_total):
+        return None
+    return ell, r_total
+
+
 def _plot_hollow_markers(
     ax: Any,
     x_values: Iterable[float],
@@ -982,169 +1027,358 @@ def _write_annotated_combined_zoom_plot(
     )
     return output_file
 
-def write_ell_vs_rmax_plots(
+def _combined_groups_and_values(
+    *,
+    homotypic_results: list[dict[str, Any]],
+    heterotypic_results: list[dict[str, Any]],
+    cutoffs: dict[str, float],
+) -> tuple[
+    list[tuple[list[dict[str, Any]], str, str, str]],
+    list[float],
+    list[float],
+]:
+    """Return combined plot groups and the corresponding R_max populations."""
+    family_metric = {0: "K_parallel", 1: "K_perp", 2: "K_Q"}
+    homotypic_colour = "#2A6FBB"
+    heterotypic_colour = "#E07A1F"
+
+    combined_groups: list[tuple[list[dict[str, Any]], str, str, str]] = []
+    homotypic_rmax: list[float] = []
+    heterotypic_rmax: list[float] = []
+
+    for family_m, info in HOMOTYPIC_PLOT_INFO.items():
+        metric_key = family_metric[family_m]
+        family_results = [
+            result
+            for result in homotypic_results
+            if homotypic_family_m(result) == family_m
+        ]
+        combined_groups.append((
+            family_results,
+            metric_key,
+            info["marker"],
+            f"{info['label']}|||{homotypic_colour}",
+        ))
+        for result in family_results:
+            point = rmax_plot_point(
+                result,
+                metric_key,
+                metric_cutoff=cutoffs[metric_key],
+            )
+            if point is not None:
+                homotypic_rmax.append(point[1])
+
+    for pair_type, info in HETEROTYPIC_PLOT_INFO.items():
+        # Match the metric selection used by the combined ell--R_max plot.
+        metric_key = heterotypic_metric_keys(pair_type)[0]
+        family_results = [
+            result
+            for result in heterotypic_results
+            if pair_type_key(result) == pair_type
+        ]
+        combined_groups.append((
+            family_results,
+            metric_key,
+            info["marker"],
+            f"{info['label']}|||{heterotypic_colour}",
+        ))
+        for result in family_results:
+            point = rmax_plot_point(
+                result,
+                metric_key,
+                metric_cutoff=cutoffs[metric_key],
+            )
+            if point is not None:
+                heterotypic_rmax.append(point[1])
+
+    return combined_groups, homotypic_rmax, heterotypic_rmax
+
+
+def _write_combined_rtotal_log_plot(
+    *,
+    combined_groups: list[tuple[list[dict[str, Any]], str, str, str]],
+    cutoffs: dict[str, float],
+    output_root: Path,
+    dpi: int,
+) -> Path:
+    """Write the combined ell--R_total plot on a logarithmic y-axis."""
+    fig, ax = plt.subplots(figsize=(6.8, 5.0))
+    count = 0
+
+    for group_results, group_metric, marker, label_color in combined_groups:
+        label, color = label_color.split("|||", 1)
+        points = [
+            point
+            for result in group_results
+            if (point := rtotal_plot_point(
+                result,
+                group_metric,
+                metric_cutoff=cutoffs[group_metric],
+            )) is not None
+        ]
+        points.sort(key=lambda point: point[0])
+        if not points:
+            continue
+
+        x_values, y_values = zip(*points)
+        _plot_hollow_markers(
+            ax,
+            x_values,
+            y_values,
+            marker=marker,
+            label=label,
+            color=color,
+            markersize=7.5,
+            markeredgewidth=1.35,
+        )
+        count += len(points)
+
+    ax.set_xlabel(r"$\ell$")
+    ax.set_ylabel(r"$R_{\mathrm{total}}$")
+    ax.set_yscale("log")
+    ax.axhline(
+        1.0,
+        color="red",
+        linestyle="--",
+        linewidth=1.2,
+        label=r"$R_{\mathrm{total}}=1$",
+        zorder=1,
+    )
+    ax.grid(True, which="both", alpha=0.3)
+    ax.legend(
+        loc="lower right",
+        frameon=True,
+        framealpha=1.0,
+        facecolor="white",
+        edgecolor="black",
+    )
+    fig.tight_layout()
+
+    output_file = (
+        output_root
+        / "homotypic_and_heterotypic_ell_vs_Rtotal_log.png"
+    )
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_file, bbox_inches="tight", dpi=dpi, format="png")
+    plt.close(fig)
+    print(f"Wrote: {output_file}")
+    print(
+        f"  plotted points: {count}; "
+        "cut-off=family-specific; y-scale=log; FoM=R_total"
+    )
+    return output_file
+
+
+def _write_combined_log_plot(
+    *,
+    combined_groups: list[tuple[list[dict[str, Any]], str, str, str]],
+    cutoffs: dict[str, float],
+    output_root: Path,
+    dpi: int,
+) -> Path:
+    fig, ax = plt.subplots(figsize=(6.8, 5.0))
+    count = 0
+    for group_results, group_metric, marker, label_color in combined_groups:
+        label, color = label_color.split("|||", 1)
+        count += _scatter_result_group(
+            ax,
+            group_results,
+            group_metric,
+            metric_cutoff=cutoffs[group_metric],
+            marker=marker,
+            label=label,
+            color=color,
+        )
+
+    output_file = output_root / "homotypic_and_heterotypic_ell_vs_Rmax_log.png"
+    _finish_rmax_plot(
+        fig,
+        ax,
+        title="",
+        output_file=output_file,
+        show_legend=True,
+        dpi=dpi,
+        y_scale="log",
+    )
+    print(
+        f"  plotted points: {count}; "
+        "cut-off=family-specific; y-scale=log"
+    )
+    return output_file
+
+
+def _shared_histogram_bins(
+    values: list[float],
+    *,
+    scale: str,
+    n_bins: int,
+) -> np.ndarray:
+    finite_positive = np.asarray([
+        value for value in values
+        if math.isfinite(value) and value > 0.0
+    ], dtype=float)
+    if finite_positive.size == 0:
+        raise ValueError("No positive finite R_max values are available.")
+    if n_bins < 1:
+        raise ValueError("HISTOGRAM_N_BINS must be at least 1.")
+
+    minimum = float(np.min(finite_positive))
+    maximum = float(np.max(finite_positive))
+    if minimum == maximum:
+        minimum *= 0.9
+        maximum *= 1.1
+
+    if scale == "log":
+        return np.logspace(
+            math.log10(minimum),
+            math.log10(maximum),
+            n_bins + 1,
+        )
+    if scale == "linear":
+        return np.linspace(minimum, maximum, n_bins + 1)
+    raise ValueError(
+        "HISTOGRAM_RMAX_SCALE must be either 'linear' or 'log'."
+    )
+
+
+def _write_rmax_histogram(
+    *,
+    homotypic_rmax: list[float],
+    heterotypic_rmax: list[float],
+    output_root: Path,
+    rmax_scale: str,
+    n_bins: int,
+    dpi: int,
+) -> Path:
+    all_values = homotypic_rmax + heterotypic_rmax
+    bins = _shared_histogram_bins(
+        all_values,
+        scale=rmax_scale,
+        n_bins=n_bins,
+    )
+
+    fig, ax = plt.subplots(figsize=(6.8, 5.0))
+    ax.hist(
+        homotypic_rmax,
+        bins=bins,
+        histtype="stepfilled",
+        alpha=HISTOGRAM_ALPHA,
+        label=f"Homotypic (n={len(homotypic_rmax)})",
+        edgecolor="#2A6FBB",
+        facecolor="#2A6FBB",
+        linewidth=1.2,
+    )
+    ax.hist(
+        heterotypic_rmax,
+        bins=bins,
+        histtype="stepfilled",
+        alpha=HISTOGRAM_ALPHA,
+        label=f"Heterotypic (n={len(heterotypic_rmax)})",
+        edgecolor="#E07A1F",
+        facecolor="#E07A1F",
+        linewidth=1.2,
+    )
+
+    ax.set_xscale(rmax_scale)
+    ax.set_xlabel(r"$R_{\max}$")
+    ax.set_ylabel("Crossing count")
+    ax.axvline(
+        1.0,
+        color="red",
+        linestyle="--",
+        linewidth=1.2,
+        label=r"$R_{\max}=1$",
+    )
+    ax.grid(True, which="both", alpha=0.3)
+    ax.legend(
+        loc="best",
+        frameon=True,
+        framealpha=1.0,
+        facecolor="white",
+        edgecolor="black",
+    )
+    fig.tight_layout()
+
+    output_file = (
+        output_root
+        / f"homotypic_and_heterotypic_Rmax_histogram_{rmax_scale}.png"
+    )
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_file, bbox_inches="tight", dpi=dpi, format="png")
+    plt.close(fig)
+    print(f"Wrote: {output_file}")
+    print(
+        "  histogram entries: "
+        f"homotypic={len(homotypic_rmax)}, "
+        f"heterotypic={len(heterotypic_rmax)}; "
+        f"shared bins={n_bins}; R_max scale={rmax_scale}"
+    )
+    return output_file
+
+
+def write_selected_ell_vs_rmax_plots(
     *,
     homotypic_root_or_pickle: str | Path = DEFAULT_HOMOTYPIC_ROOT,
     heterotypic_root_or_pickle: str | Path = DEFAULT_HETEROTYPIC_ROOT,
     output_root: str | Path = DEFAULT_RMAX_PLOT_ROOT,
     metric_cutoffs: dict[str, float] | None = None,
-    y_scales: Iterable[str] = DEFAULT_Y_SCALES,
+    histogram_rmax_scale: str = HISTOGRAM_RMAX_SCALE,
+    histogram_n_bins: int = HISTOGRAM_N_BINS,
     dpi: int = 300,
 ) -> list[Path]:
-    """Write linear and/or logarithmic ell-versus-R_max PNG figures."""
+    """Write the selected R_max plots, R_total plot, and R_max histogram."""
     cutoffs = _normalised_metric_cutoffs(metric_cutoffs)
     homotypic_results = load_homotypic_results(homotypic_root_or_pickle)
     heterotypic_results = load_heterotypic_results(heterotypic_root_or_pickle)
     output_root = Path(output_root)
 
-    scales = tuple(dict.fromkeys(str(scale).lower() for scale in y_scales))
-    if not scales:
-        raise ValueError("At least one y-axis scale must be selected.")
-    invalid = set(scales) - {"linear", "log"}
-    if invalid:
-        raise ValueError("Unsupported y-axis scale(s): " + ", ".join(sorted(invalid)))
-
-    written: list[Path] = []
-
-    def save_group(
-        *,
-        groups: list[tuple[list[dict[str, Any]], str, str, str | None]],
-        metric_key: str | None,
-        title: str,
-        output_stem: Path,
-        show_legend: bool,
-    ) -> None:
-        for y_scale in scales:
-            fig, ax = plt.subplots(figsize=(6.8, 5.0))
-            count = 0
-            for group_results, group_metric, marker, label_color in groups:
-                label, color = label_color.split("|||", 1) if label_color and "|||" in label_color else (label_color or "", None)
-                count += _scatter_result_group(
-                    ax,
-                    group_results,
-                    group_metric,
-                    metric_cutoff=cutoffs[group_metric],
-                    marker=marker,
-                    label=label,
-                    color=color,
-                )
-            output_file = output_stem.with_name(f"{output_stem.name}_{y_scale}.png")
-            written.append(_finish_rmax_plot(
-                fig,
-                ax,
-                title=title,
-                output_file=output_file,
-                show_legend=show_legend,
-                dpi=dpi,
-                y_scale=y_scale,
-            ))
-            cutoff_text = cutoffs[metric_key] if metric_key else "family-specific"
-            print(f"  plotted points: {count}; cut-off={cutoff_text}; y-scale={y_scale}")
-
-    for pair_type, info in HETEROTYPIC_PLOT_INFO.items():
-        family_results = [r for r in heterotypic_results if pair_type_key(r) == pair_type]
-        for metric_key in heterotypic_metric_keys(pair_type):
-            save_group(
-                groups=[(family_results, metric_key, info["marker"], info["label"])],
-                metric_key=metric_key,
-                title=(rf"Heterotypic {info['label']}: $\ell$ versus $R_{{\max}}$ "
-                       rf"({METRIC_INFO[metric_key]['latex'].strip('$')})"),
-                output_stem=output_root / "heterotypic" /
-                    f"heterotypic_{pair_type}_ell_vs_Rmax_{METRIC_FILENAME[metric_key]}",
-                show_legend=False,
-            )
-
-    for metric_key in METRIC_INFO:
-        groups = []
-        for pair_type, info in HETEROTYPIC_PLOT_INFO.items():
-            if metric_key in heterotypic_metric_keys(pair_type):
-                family_results = [r for r in heterotypic_results if pair_type_key(r) == pair_type]
-                groups.append((family_results, metric_key, info["marker"], info["label"]))
-        save_group(
-            groups=groups,
-            metric_key=metric_key,
-            title=(rf"All heterotypic crossings: $\ell$ versus $R_{{\max}}$ "
-                   rf"({METRIC_INFO[metric_key]['latex'].strip('$')})"),
-            output_stem=output_root / "heterotypic" /
-                f"all_heterotypic_ell_vs_Rmax_{METRIC_FILENAME[metric_key]}",
-            show_legend=True,
+    combined_groups, homotypic_rmax, heterotypic_rmax = (
+        _combined_groups_and_values(
+            homotypic_results=homotypic_results,
+            heterotypic_results=heterotypic_results,
+            cutoffs=cutoffs,
         )
-
-    family_metric = {0: "K_parallel", 1: "K_perp", 2: "K_Q"}
-    for family_m, info in HOMOTYPIC_PLOT_INFO.items():
-        metric_key = family_metric[family_m]
-        family_results = [r for r in homotypic_results if homotypic_family_m(r) == family_m]
-        save_group(
-            groups=[(family_results, metric_key, info["marker"], info["label"])],
-            metric_key=metric_key,
-            title=(rf"Homotypic {info['label']}: $\ell$ versus $R_{{\max}}$ "
-                   rf"({METRIC_INFO[metric_key]['latex'].strip('$')})"),
-            output_stem=output_root / "homotypic" /
-                f"homotypic_{info['label'].replace('--', '_')}_ell_vs_Rmax_{METRIC_FILENAME[metric_key]}",
-            show_legend=False,
-        )
-
-    homo_groups = []
-    for family_m, info in HOMOTYPIC_PLOT_INFO.items():
-        metric_key = family_metric[family_m]
-        homo_groups.append((
-            [r for r in homotypic_results if homotypic_family_m(r) == family_m],
-            metric_key,
-            info["marker"],
-            info["label"],
-        ))
-    save_group(
-        groups=homo_groups,
-        metric_key=None,
-        title=r"All homotypic crossings: $\ell$ versus $R_{\max}$",
-        output_stem=output_root / "homotypic" / "all_homotypic_ell_vs_Rmax",
-        show_legend=True,
     )
 
-    homotypic_colour = "#2A6FBB"
-    heterotypic_colour = "#E07A1F"
-    combined_groups = []
-    for family_m, info in HOMOTYPIC_PLOT_INFO.items():
-        metric_key = family_metric[family_m]
-        combined_groups.append((
-            [r for r in homotypic_results if homotypic_family_m(r) == family_m],
-            metric_key,
-            info["marker"],
-            f"{info['label']}|||{homotypic_colour}",
-        ))
-    for pair_type, info in HETEROTYPIC_PLOT_INFO.items():
-        metric_key = heterotypic_metric_keys(pair_type)[0]
-        combined_groups.append((
-            [r for r in heterotypic_results if pair_type_key(r) == pair_type],
-            metric_key,
-            info["marker"],
-            f"{info['label']}|||{heterotypic_colour}",
-        ))
-    save_group(
-        groups=combined_groups,
-        metric_key=None,
-        # title=r"Homotypic and heterotypic crossings: $\ell$ versus $R_{\max}$",
-        title=r"",
-        output_stem=output_root / "homotypic_and_heterotypic_ell_vs_Rmax",
-        show_legend=True,
-    )
-
-    written.append(_write_annotated_combined_zoom_plot(
-        homotypic_results=homotypic_results,
-        heterotypic_results=heterotypic_results,
-        cutoffs=cutoffs,
-        output_root=output_root,
-        dpi=dpi,
-    ))
+    written = [
+        _write_combined_log_plot(
+            combined_groups=combined_groups,
+            cutoffs=cutoffs,
+            output_root=output_root,
+            dpi=dpi,
+        ),
+        _write_combined_rtotal_log_plot(
+            combined_groups=combined_groups,
+            cutoffs=cutoffs,
+            output_root=output_root,
+            dpi=dpi,
+        ),
+        _write_annotated_combined_zoom_plot(
+            homotypic_results=homotypic_results,
+            heterotypic_results=heterotypic_results,
+            cutoffs=cutoffs,
+            output_root=output_root,
+            dpi=dpi,
+        ),
+        _write_rmax_histogram(
+            homotypic_rmax=homotypic_rmax,
+            heterotypic_rmax=heterotypic_rmax,
+            output_root=output_root,
+            rmax_scale=histogram_rmax_scale.lower(),
+            n_bins=histogram_n_bins,
+            dpi=dpi,
+        ),
+    ]
     return written
 
 
 if __name__ == "__main__":
-    write_ell_vs_rmax_plots(
+    write_selected_ell_vs_rmax_plots(
         homotypic_root_or_pickle=DEFAULT_HOMOTYPIC_ROOT,
         heterotypic_root_or_pickle=DEFAULT_HETEROTYPIC_ROOT,
         output_root=DEFAULT_RMAX_PLOT_ROOT,
         metric_cutoffs=DEFAULT_METRIC_CUTOFFS,
-        y_scales=DEFAULT_Y_SCALES,
+        histogram_rmax_scale=HISTOGRAM_RMAX_SCALE,
+        histogram_n_bins=HISTOGRAM_N_BINS,
         dpi=300,
     )
