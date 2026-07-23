@@ -389,6 +389,7 @@ def assemble_all_data_dict(m_max, n_max, p_max,
     all_data['TE'] = {}
     all_data['length_factor_vector'] = length_factor_vector_floats
 
+    n_modes = 0
     for pidx, p in enumerate(pint):
         for nidx, n in enumerate(nint):
             for midx, m in enumerate(mint):
@@ -455,7 +456,9 @@ def assemble_all_data_dict(m_max, n_max, p_max,
                     all_data['TE'][f"{m}{n}{p}"]['frequency_Hz'] = TE_mode_data
                     all_data['TM'][f"{m}{n}{p}"]['frequency_normalised'] = TM_normalised_mode_data
                     all_data['TE'][f"{m}{n}{p}"]['frequency_normalised'] = TE_normalised_mode_data
-
+                
+                n_modes += 1
+    input(f"{n_modes = }")
     return all_data
 
 def pickle_save(data_dict, dir_fname):
@@ -792,7 +795,7 @@ def plot_crossing_population_heatmap(
 
     return counts, categories, all_crossings
 
-def plot_crossing_population_heatmap_TM(
+def plot_crossing_population_heatmap_TM_old(
     crossing_results: dict,
     savepath: str,
     savename: str,
@@ -925,6 +928,250 @@ def plot_crossing_population_heatmap_TM(
     else:
         plt.savefig(f"{savepath}\\{savename}.png", dpi=dpi)
         plt.close("all")
+
+    return counts, categories, all_crossings
+
+
+def plot_crossing_population_heatmap_TM(
+    crossing_results: dict,
+    savepath: str,
+    savename: str,
+    *,
+    m_values=(0, 1, 2),
+    include_families=("TM",),
+    inspect: bool = False,
+    dpi: int = 300,
+    tick_fontsize: float = 13,
+    cell_fontsize: float = 11,
+    colorbar_label_fontsize: float = 13,
+    colorbar_tick_fontsize: float = 12,
+):
+    """
+    TM-TM category heatmap of crossing populations.
+
+    Plots only:
+        TM0np, TM1np, TM2np
+
+    Data is displayed in the lower-left triangle, including the diagonal.
+
+    Cell shorthand:
+        M-M  -> TM0np--TM0np
+        M-D  -> TM0np--TM1np
+        D-D  -> TM1np--TM1np
+        M-Q  -> TM0np--TM2np
+        D-Q  -> TM1np--TM2np
+        Q-Q  -> TM2np--TM2np
+    """
+
+    include_families = ("TM",)
+
+    categories = [f"TM{m}np" for m in m_values]
+    cat_index = {category: index for index, category in enumerate(categories)}
+    number_of_categories = len(categories)
+
+    counts = np.zeros(
+        (number_of_categories, number_of_categories),
+        dtype=int,
+    )
+
+    def parse_mode_tag(tag: str):
+        family, mnp = tag.split("_", 1)
+        family = family.upper()
+        index_string = str(mnp)
+
+        if len(index_string) < 2:
+            raise ValueError(
+                f"Invalid mnp key in tag: {tag!r}"
+            )
+
+        m = int(index_string[0])
+        n = int(index_string[1])
+        p = (
+            int(index_string[2:])
+            if len(index_string) > 2
+            else 0
+        )
+
+        return family, m, n, p, index_string
+
+    def to_category(m: int) -> str:
+        return f"TM{m}np"
+
+    # Only collect TM-TM crossings.
+    all_crossings = []
+    if (
+        "TM" in crossing_results
+        and "crossings" in crossing_results["TM"]
+    ):
+        all_crossings.extend(
+            crossing_results["TM"]["crossings"].values()
+        )
+
+    for crossing in all_crossings:
+        mode_i = crossing.get("mode_i")
+        mode_j = crossing.get("mode_j")
+
+        if not mode_i or not mode_j:
+            continue
+
+        family_i, m_i, *_ = parse_mode_tag(mode_i)
+        family_j, m_j, *_ = parse_mode_tag(mode_j)
+
+        # Strictly TM-TM only.
+        if family_i != "TM" or family_j != "TM":
+            continue
+
+        if m_i not in m_values or m_j not in m_values:
+            continue
+
+        category_i = to_category(m_i)
+        category_j = to_category(m_j)
+
+        i = cat_index[category_i]
+        j = cat_index[category_j]
+
+        # Force population into the lower-left triangle.
+        if i < j:
+            i, j = j, i
+
+        counts[i, j] += 1
+
+    # Mask the upper-right triangle.
+    mask = np.triu(
+        np.ones_like(counts, dtype=bool),
+        k=1,
+    )
+    heat = counts.astype(float)
+    heat[mask] = np.nan
+
+    fig, ax = plt.subplots(figsize=(5.2, 4.6))
+
+    maximum_count = int(np.nanmax(heat)) if np.any(~np.isnan(heat)) else 0
+
+    im = ax.imshow(
+        heat,
+        aspect="equal",
+        vmin=0,
+        vmax=max(25, maximum_count),
+    )
+
+    ax.set_xticks(np.arange(number_of_categories))
+    ax.set_yticks(np.arange(number_of_categories))
+
+    ax.set_xticklabels(
+        categories,
+        rotation=45,
+        ha="right",
+        fontsize=tick_fontsize,
+    )
+    ax.set_yticklabels(
+        categories,
+        fontsize=tick_fontsize,
+    )
+
+    # No title and no generic "Category" axis labels.
+    ax.set_xlabel("")
+    ax.set_ylabel("")
+
+    # Crossing-type shorthand for the six occupied cells.
+    crossing_type_labels = {
+        (0, 0): "M-M",
+        (1, 0): "M-D",
+        (1, 1): "D-D",
+        (2, 0): "M-Q",
+        (2, 1): "D-Q",
+        (2, 2): "Q-Q",
+    }
+
+    bbox_style = {
+        "facecolor": "white",
+        "edgecolor": "none",
+        "alpha": 0.70,
+        "boxstyle": "square,pad=0.25",
+    }
+
+    for i in range(number_of_categories):
+        for j in range(number_of_categories):
+            if np.isnan(heat[i, j]):
+                continue
+
+            crossing_label = crossing_type_labels.get(
+                (i, j),
+                "",
+            )
+
+            cell_text = (
+                rf"{crossing_label}"
+                "\n"
+                rf"${counts[i, j]}$"
+            )
+
+            ax.text(
+                j,
+                i,
+                cell_text,
+                ha="center",
+                va="center",
+                fontsize=cell_fontsize,
+                color="black",
+                bbox=bbox_style,
+            )
+
+    # Cell boundaries.
+    ax.set_xticks(
+        np.arange(-0.5, number_of_categories, 1),
+        minor=True,
+    )
+    ax.set_yticks(
+        np.arange(-0.5, number_of_categories, 1),
+        minor=True,
+    )
+    ax.grid(
+        which="minor",
+        linewidth=0.6,
+    )
+    ax.tick_params(
+        which="minor",
+        bottom=False,
+        left=False,
+    )
+
+    colorbar = fig.colorbar(
+        im,
+        ax=ax,
+        fraction=0.046,
+        pad=0.04,
+        ticks=[0, 5, 10, 15, 20, 25],
+    )
+
+    colorbar.set_label(
+        "Crossing count",
+        fontsize=colorbar_label_fontsize,
+    )
+    colorbar.ax.tick_params(
+        labelsize=colorbar_tick_fontsize,
+    )
+
+    fig.tight_layout()
+
+    output_file = (
+        Path(savepath)
+        / f"{savename}.png"
+    )
+
+    if inspect:
+        plt.show()
+    else:
+        output_file.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+        fig.savefig(
+            output_file,
+            dpi=dpi,
+            bbox_inches="tight",
+        )
+        plt.close(fig)
 
     return counts, categories, all_crossings
 
@@ -1186,7 +1433,671 @@ def plot_modes_from_all_data(
         plt.close("all")
 
 
+def plot_modes_from_all_data_PRAB(
+    all_data,
+    crossing_results,
+    savepath,
+    savename,
+    *,
+    mode_type="TM",          # "TM", "TE", "both"
+    m_filter=None,           # None, int, iterable[int]
+    n_filter=None,           # None, int, iterable[int]
+    p_filter=None,           # None, int, iterable[int]
+    normalised=False,
+    inspect=False,
+    loglog=False,
+    acceptance_fraction=None,
+    ell_min=0.7,
+    ell_max=1.3,
+):
+    """
+    Plot mode-frequency curves and crossings over a configurable ell range.
 
+    Mode curves
+    -----------
+    All curves are black and distinguished by azimuthal family:
+
+        monopole, m=0: solid line
+        dipole,   m=1: dash-dot line
+        quadrupole, m=2: dotted line
+
+    Crossing markers
+    ----------------
+    Homotypic crossings are plotted in strong blue:
+
+        M-M: star
+        D-D: pentagon
+        Q-Q: downward triangle
+
+    Heterotypic crossings are plotted in vivid orange:
+
+        M-D: pentagon
+        M-Q: square
+        D-Q: left triangle
+
+    All crossing markers are hollow, with edge colour only.
+
+    Parameters
+    ----------
+    all_data
+        Shared mode-data dictionary.
+
+    crossing_results
+        Output from find_mode_crossings_from_all_data().
+
+    savepath, savename
+        Output directory and PNG filename stem.
+
+    mode_type
+        "TM", "TE", or "both".
+
+    m_filter, n_filter, p_filter
+        Optional integer or iterable-of-integer filters.
+
+    normalised
+        Plot f/f_010 when True; otherwise plot frequency in GHz.
+
+    ell_min, ell_max
+        Horizontal plotting range. Defaults to 0.7 <= ell <= 1.3.
+    """
+    from pathlib import Path
+
+    import matplotlib.pyplot as plt
+    import numpy as np
+    from matplotlib.lines import Line2D
+
+    HOMOTYPIC_COLOUR = "#0057B8"      # strong blue
+    HETEROTYPIC_COLOUR = "#F28E00"    # vivid orange
+
+    HOMOTYPIC_PLOT_INFO = {
+        0: {
+            "label": "M-M",
+            "marker": "*",
+        },
+        1: {
+            "label": "D-D",
+            "marker": "p",
+        },
+        2: {
+            "label": "Q-Q",
+            "marker": "v",
+        },
+    }
+
+    HETEROTYPIC_PLOT_INFO = {
+        "monopole_dipole": {
+            "label": "M-D",
+            "marker": "p",
+        },
+        "monopole_quadrupole": {
+            "label": "M-Q",
+            "marker": "s",
+        },
+        "dipole_quadrupole": {
+            "label": "D-Q",
+            "marker": "<",
+        },
+    }
+
+    # Matplotlib's dotted linestyle is ":" rather than "..".
+    MODE_LINESTYLES = {
+        0: "-",     # monopole
+        1: "-.",    # dipole
+        2: ":",     # quadrupole
+    }
+
+    MODE_FAMILY_LABELS = {
+        0: "Monopole modes",
+        1: "Dipole modes",
+        2: "Quadrupole modes",
+    }
+
+    mode_type = mode_type.upper()
+    if mode_type not in {"TM", "TE", "BOTH"}:
+        raise ValueError(
+            "mode_type must be 'TM', 'TE', or 'both'."
+        )
+
+    if ell_min >= ell_max:
+        raise ValueError(
+            "ell_min must be smaller than ell_max."
+        )
+
+    def _to_set(value, name):
+        if value is None:
+            return None
+
+        if isinstance(value, int):
+            return {value}
+
+        try:
+            return {int(item) for item in value}
+        except Exception as exc:
+            raise ValueError(
+                f"{name} must be None, an integer, or an "
+                "iterable of integers."
+            ) from exc
+
+    m_filter_set = _to_set(m_filter, "m_filter")
+    n_filter_set = _to_set(n_filter, "n_filter")
+    p_filter_set = _to_set(p_filter, "p_filter")
+
+    def parse_mnp(mnp):
+        """
+        Parse a mode key such as '012' as m=0, n=1, p=2.
+
+        For longer keys, m and n remain the first two digits and p is
+        interpreted from the remaining digits.
+        """
+        text = str(mnp)
+
+        if len(text) < 2 or not text.isdigit():
+            raise ValueError(
+                f"Invalid mnp mode key: {mnp!r}."
+            )
+
+        m_value = int(text[0])
+        n_value = int(text[1])
+        p_value = int(text[2:]) if len(text) > 2 else 0
+
+        return m_value, n_value, p_value
+
+    def crossing_mode_parts(crossing, key):
+        """
+        Return (family, mnp) from crossing['mode_i'] or crossing['mode_j'].
+        """
+        value = str(crossing[key])
+
+        if "_" not in value:
+            raise ValueError(
+                f"Crossing mode name {value!r} does not contain "
+                "a family separator."
+            )
+
+        family, mnp = value.split("_", 1)
+        return family.upper(), mnp
+
+    def crossing_pair_type(m_i, m_j):
+        pair = tuple(sorted((m_i, m_j)))
+
+        return {
+            (0, 1): "monopole_dipole",
+            (0, 2): "monopole_quadrupole",
+            (1, 2): "dipole_quadrupole",
+        }.get(pair)
+
+    length_factor_vector = np.asarray(
+        all_data["length_factor_vector"],
+        dtype=float,
+    )
+
+    if length_factor_vector.ndim != 1:
+        raise ValueError(
+            "all_data['length_factor_vector'] must be one-dimensional."
+        )
+
+    families = []
+
+    if mode_type in {"TM", "BOTH"}:
+        families.append("TM")
+
+    if mode_type in {"TE", "BOTH"}:
+        families.append("TE")
+
+    # --------------------------------------------------------------
+    # Collect the visible modes
+    # --------------------------------------------------------------
+    visible_modes = []
+
+    for family in families:
+        if family not in all_data:
+            continue
+
+        for mnp in all_data[family]:
+            m_value, n_value, p_value = parse_mnp(mnp)
+
+            if (
+                m_filter_set is not None
+                and m_value not in m_filter_set
+            ):
+                continue
+
+            if (
+                n_filter_set is not None
+                and n_value not in n_filter_set
+            ):
+                continue
+
+            if (
+                p_filter_set is not None
+                and p_value not in p_filter_set
+            ):
+                continue
+
+            # This plot is defined for monopole, dipole and quadrupole
+            # families only.
+            if m_value not in MODE_LINESTYLES:
+                continue
+
+            visible_modes.append(
+                (family, str(mnp), m_value)
+            )
+
+    if not visible_modes:
+        raise ValueError(
+            "No modes remain after applying the requested filters."
+        )
+
+    visible_set = {
+        (family, mnp)
+        for family, mnp, _ in visible_modes
+    }
+
+    # --------------------------------------------------------------
+    # Create figure
+    # --------------------------------------------------------------
+    fig, ax = plt.subplots(
+        figsize=(12.0, 7.0)
+    )
+
+    # --------------------------------------------------------------
+    # Plot all mode curves in black
+    # --------------------------------------------------------------
+    plotted_mode_families = set()
+
+    for family, mnp, m_value in visible_modes:
+        data = all_data[family][mnp]
+
+        if normalised:
+            y_values = np.asarray(
+                data["frequency_normalised"],
+                dtype=float,
+            )
+        else:
+            y_values = (
+                np.asarray(
+                    data["frequency_Hz"],
+                    dtype=float,
+                )
+                / 1.0e9
+            )
+
+        x_values = length_factor_vector.copy()
+
+        mask = (
+            np.isfinite(x_values)
+            & np.isfinite(y_values)
+            & (x_values >= ell_min)
+            & (x_values <= ell_max)
+        )
+
+        if loglog:
+            mask &= (
+                (x_values > 0.0)
+                & (y_values > 0.0)
+            )
+
+        if not np.any(mask):
+            continue
+
+        ax.plot(
+            x_values[mask],
+            y_values[mask],
+            color="black",
+            linestyle=MODE_LINESTYLES[m_value],
+            linewidth=1.0,
+            alpha=0.85,
+            zorder=1,
+        )
+
+        plotted_mode_families.add(m_value)
+
+    # --------------------------------------------------------------
+    # Gather visible crossing records
+    # --------------------------------------------------------------
+    crossing_entries = []
+
+    def crossing_is_visible(crossing):
+        family_i, mnp_i = crossing_mode_parts(
+            crossing,
+            "mode_i",
+        )
+        family_j, mnp_j = crossing_mode_parts(
+            crossing,
+            "mode_j",
+        )
+
+        return (
+            (family_i, mnp_i) in visible_set
+            and (family_j, mnp_j) in visible_set
+        )
+
+    for family in families:
+        family_results = crossing_results.get(family, {})
+
+        for crossing in family_results.get(
+            "crossings",
+            {},
+        ).values():
+            if crossing_is_visible(crossing):
+                crossing_entries.append(crossing)
+
+    if mode_type == "BOTH":
+        for crossing in crossing_results.get(
+            "HYBRID",
+            {},
+        ).get(
+            "crossings",
+            {},
+        ).values():
+            if crossing_is_visible(crossing):
+                crossing_entries.append(crossing)
+
+    # --------------------------------------------------------------
+    # Plot crossings using family-specific hollow markers
+    # --------------------------------------------------------------
+    plotted_crossing_categories = set()
+
+    for crossing in crossing_entries:
+        ell = float(crossing["length_factor"])
+
+        if not ell_min <= ell <= ell_max:
+            continue
+
+        family_i, mnp_i = crossing_mode_parts(
+            crossing,
+            "mode_i",
+        )
+        family_j, mnp_j = crossing_mode_parts(
+            crossing,
+            "mode_j",
+        )
+
+        m_i, _, _ = parse_mnp(mnp_i)
+        m_j, _, _ = parse_mnp(mnp_j)
+
+        if normalised:
+            frequency_values = np.asarray(
+                all_data[family_i][mnp_i][
+                    "frequency_normalised"
+                ],
+                dtype=float,
+            )
+
+            y_value = float(
+                np.interp(
+                    ell,
+                    length_factor_vector,
+                    frequency_values,
+                )
+            )
+        else:
+            y_value = (
+                float(crossing["frequency_Hz"])
+                / 1.0e9
+            )
+
+        if (
+            not np.isfinite(ell)
+            or not np.isfinite(y_value)
+        ):
+            continue
+
+        if loglog and (
+            ell <= 0.0 or y_value <= 0.0
+        ):
+            continue
+
+        if m_i == m_j:
+            if m_i not in HOMOTYPIC_PLOT_INFO:
+                continue
+
+            category_key = (
+                "homotypic",
+                m_i,
+            )
+            plot_info = HOMOTYPIC_PLOT_INFO[m_i]
+            marker_colour = HOMOTYPIC_COLOUR
+
+        else:
+            pair_type = crossing_pair_type(
+                m_i,
+                m_j,
+            )
+
+            if pair_type not in HETEROTYPIC_PLOT_INFO:
+                continue
+
+            category_key = (
+                "heterotypic",
+                pair_type,
+            )
+            plot_info = HETEROTYPIC_PLOT_INFO[
+                pair_type
+            ]
+            marker_colour = HETEROTYPIC_COLOUR
+
+        ax.scatter(
+            ell,
+            y_value,
+            marker=plot_info["marker"],
+            s=90,
+            facecolors="none",
+            edgecolors=marker_colour,
+            linewidths=1.6,
+            zorder=3,
+        )
+
+        plotted_crossing_categories.add(
+            category_key
+        )
+
+    # --------------------------------------------------------------
+    # Reference and acceptance lines
+    # --------------------------------------------------------------
+    ax.axvline(
+        1.0,
+        linestyle="--",
+        color="black",
+        alpha=0.7,
+        linewidth=1.0,
+        zorder=0,
+    )
+
+    if acceptance_fraction is not None:
+        acceptance_fraction = float(
+            acceptance_fraction
+        )
+
+        if acceptance_fraction < 0.0:
+            raise ValueError(
+                "acceptance_fraction must be non-negative."
+            )
+
+        ax.axvline(
+            1.0 - acceptance_fraction,
+            linestyle="--",
+            color="red",
+            alpha=0.7,
+            linewidth=1.0,
+            zorder=0,
+        )
+        ax.axvline(
+            1.0 + acceptance_fraction,
+            linestyle="--",
+            color="red",
+            alpha=0.7,
+            linewidth=1.0,
+            zorder=0,
+        )
+
+    # --------------------------------------------------------------
+    # Axis setup
+    # --------------------------------------------------------------
+    ax.set_xlim(
+        ell_min,
+        ell_max,
+    )
+
+    if loglog:
+        ax.set_xscale("log")
+        ax.set_yscale("log")
+
+    ax.set_xlabel(
+        r"$\ell=2d/\lambda_{010}$",
+        fontsize=18,
+    )
+
+    ax.set_ylabel(
+        (
+            r"$\hat{f}=f_{mnp}/f_{010}$"
+            if normalised
+            else r"$f$ [GHz]"
+        ),
+        fontsize=18,
+    )
+
+    ax.tick_params(
+        axis="both",
+        labelsize=11,
+    )
+
+    if loglog:
+        ax.minorticks_on()
+        ax.grid(
+            which="major",
+            alpha=0.35,
+            linewidth=0.6,
+        )
+        ax.grid(
+            which="minor",
+            alpha=0.15,
+            linewidth=0.4,
+        )
+    else:
+        ax.grid(
+            which="major",
+            alpha=0.25,
+            linewidth=0.5,
+        )
+
+    # --------------------------------------------------------------
+    # Build a compact, non-duplicated legend
+    # --------------------------------------------------------------
+    legend_handles = []
+
+    for m_value in (0, 1, 2):
+        if m_value not in plotted_mode_families:
+            continue
+
+        legend_handles.append(
+            Line2D(
+                [0],
+                [0],
+                color="black",
+                linestyle=MODE_LINESTYLES[m_value],
+                linewidth=1.3,
+                label=MODE_FAMILY_LABELS[m_value],
+            )
+        )
+
+    for m_value in (0, 1, 2):
+        category_key = (
+            "homotypic",
+            m_value,
+        )
+
+        if (
+            category_key
+            not in plotted_crossing_categories
+        ):
+            continue
+
+        info = HOMOTYPIC_PLOT_INFO[m_value]
+
+        legend_handles.append(
+            Line2D(
+                [0],
+                [0],
+                linestyle="none",
+                marker=info["marker"],
+                markerfacecolor="none",
+                markeredgecolor=HOMOTYPIC_COLOUR,
+                markeredgewidth=1.5,
+                markersize=8,
+                label=info["label"],
+            )
+        )
+
+    for pair_type in (
+        "monopole_dipole",
+        "monopole_quadrupole",
+        "dipole_quadrupole",
+    ):
+        category_key = (
+            "heterotypic",
+            pair_type,
+        )
+
+        if (
+            category_key
+            not in plotted_crossing_categories
+        ):
+            continue
+
+        info = HETEROTYPIC_PLOT_INFO[
+            pair_type
+        ]
+
+        legend_handles.append(
+            Line2D(
+                [0],
+                [0],
+                linestyle="none",
+                marker=info["marker"],
+                markerfacecolor="none",
+                markeredgecolor=HETEROTYPIC_COLOUR,
+                markeredgewidth=1.5,
+                markersize=8,
+                label=info["label"],
+            )
+        )
+
+    ax.legend(
+        handles=legend_handles,
+        loc="best",
+        ncol=2,
+        fontsize=9,
+        frameon=True,
+        framealpha=1.0,
+        facecolor="white",
+        edgecolor="black",
+    )
+
+    fig.tight_layout()
+
+    if inspect:
+        plt.show()
+    else:
+        output_path = (
+            Path(savepath)
+            / f"{savename}.png"
+        )
+        output_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+
+        fig.savefig(
+            output_path,
+            dpi=300,
+            bbox_inches="tight",
+        )
+        plt.close(fig)
+
+        print(
+            f"Wrote: {output_path}"
+        )
 
 # ---------------------------
 # Helpers

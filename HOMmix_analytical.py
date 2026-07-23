@@ -75,6 +75,25 @@ if __name__ == "__main__":
         inspect=False,
     )
 
+    # all TM mode crossings for PRAB paper
+
+    TM_crossing_results = hamm.find_mode_crossings_from_all_data(
+        all_data_dict,
+        mode_type="TM",
+    )
+
+    hamm.plot_modes_from_all_data_PRAB(
+        all_data_dict,
+        TM_crossing_results,
+        savepath,
+        "TM_all_modes_and_crossings",
+        mode_type="TM",
+        normalised=True,
+        m_filter=(0, 1, 2),
+        ell_min=0.7,
+        ell_max=1.3,
+    )
+
     exit()
 
     """ TE MODES """
