@@ -824,7 +824,7 @@ def _metric_legend_symbol(metric_key: str) -> str:
 
 def _fom_legend_label(base_label: str, metric_key: str) -> str:
     symbol = _metric_legend_symbol(metric_key)
-    return rf"{base_label} $R_{{\mathrm{{total}},{symbol}}}$"
+    return rf"{base_label} $R_{symbol}$"
 
 def _plot_hollow_markers(
     ax: Any,
@@ -977,14 +977,14 @@ def _write_combined_rtotal_log_plot(
     )
 
     ax.set_xlabel(r"$\ell$", fontsize=AXIS_LABEL_FONTSIZE)
-    ax.set_ylabel(r"$R_{\mathrm{total}}$", fontsize=AXIS_LABEL_FONTSIZE)
+    ax.set_ylabel(r"$R_{K}$", fontsize=AXIS_LABEL_FONTSIZE)
     ax.set_yscale("log")
     ax.axhline(
         1.0,
         color=REFERENCE_COLOUR,
         linestyle="--",
         linewidth=REFERENCE_LINE_WIDTH,
-        label=r"$R_{\mathrm{total}}=1$",
+        label=r"$R_{K}=1$",
         zorder=1,
     )
     ax.grid(True, which="both", alpha=0.3)
@@ -1350,13 +1350,13 @@ def _write_combined_rtotal_zoom_plot(
     ax.set_ylim(rtotal_min, rtotal_max)
     ax.set_yscale(y_scale)
     ax.set_xlabel(r"$\ell$", fontsize=AXIS_LABEL_FONTSIZE)
-    ax.set_ylabel(r"$R_{\mathrm{total}}$", fontsize=AXIS_LABEL_FONTSIZE)
+    ax.set_ylabel(r"$R_{K}$", fontsize=AXIS_LABEL_FONTSIZE)
     ax.axhline(
         1.0,
         color=REFERENCE_COLOUR,
         linestyle="--",
         linewidth=REFERENCE_LINE_WIDTH,
-        label=r"$R_{\mathrm{total}}=1$",
+        label=r"$R_{K}=1$",
         zorder=1,
     )
     ax.grid(True, which="both", alpha=0.3)
@@ -1430,10 +1430,10 @@ def _write_rtotal_histogram(
     )
 
     ax.set_xscale(rtotal_scale)
-    ax.set_xlabel(r"$R_{\mathrm{total}}$", fontsize=AXIS_LABEL_FONTSIZE)
+    ax.set_xlabel(r"$R_{K}$", fontsize=AXIS_LABEL_FONTSIZE)
     ax.set_ylabel("Crossing count", fontsize=AXIS_LABEL_FONTSIZE)
     ax.axvline(1.0, color=REFERENCE_COLOUR, linestyle="--", linewidth=REFERENCE_LINE_WIDTH,
-               label=r"$R_{\mathrm{total}}=1$")
+               label=r"$R_{K}=1$")
     ax.grid(True, which="both", alpha=0.3)
     ax.legend(loc="best", frameon=True, framealpha=1.0,
               facecolor="white", edgecolor="black", fontsize=LEGEND_FONTSIZE,
@@ -1663,11 +1663,11 @@ def _write_ell_and_rtotal_histogram_two_panel(
         color=REFERENCE_COLOUR,
         linestyle="--",
         linewidth=REFERENCE_LINE_WIDTH,
-        label=r"$R_{\mathrm{total}}=1$",
+        label=r"$R_{K}=1$",
         zorder=3,
     )
     ax_rtotal.set_xlabel(
-        r"$R_{\mathrm{total}}$",
+        r"$R_{K}$",
         fontsize=AXIS_LABEL_FONTSIZE,
     )
     ax_rtotal.set_ylabel("Crossing count", fontsize=AXIS_LABEL_FONTSIZE)
