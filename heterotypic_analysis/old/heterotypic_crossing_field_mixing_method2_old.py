@@ -1590,7 +1590,7 @@ def plot_pair_sweeps(
             ax.scatter(c["length_factor"], c["frequency_normalised"], s=50, facecolors="none", edgecolors="k")
 
         ax.set_xlabel(r"Length factor, $\ell=L/L_0$")
-        ax.set_ylabel(r"Normalised frequency, $\hat{f}=f/f_{010}$")
+        ax.set_ylabel(r"Normalised frequency, $\bar{f}=f/f_{010}$")
         ax.set_title(pair_name.replace("_", "-"))
         ax.grid(alpha=0.25)
         ax.legend(fontsize=7, ncols=2)

@@ -151,7 +151,7 @@ def write_two_panel_p_over_ell_plot(
         axis.grid(True, which="both", linewidth=0.45, alpha=0.35)
         axis.tick_params(which="both", direction="in", top=True, right=True)
 
-    ax_context.set_ylabel(r"$\hat{f}=f_{mnp}/f_{010}$")
+    ax_context.set_ylabel(r"$\bar{f}=f_{mnp}/f_{010}$")
 
     ax_highlight.axvline(
         0.2,
@@ -174,7 +174,7 @@ def write_two_panel_p_over_ell_plot(
     ax_highlight.text(
         0.02,
         1.0e2,
-        r"$\hat{f}\approx Bp/\ell$",
+        r"$\bar{f}\approx Bp/\ell$",
         ha="center",
         va="center",
         fontsize=8.5,
@@ -190,7 +190,7 @@ def write_two_panel_p_over_ell_plot(
     ax_highlight.text(
         10.0,
         1.0e2,
-        r"$\hat{f}-1\approx p^2/\ell^2$",
+        r"$\bar{f}-1\approx p^2/\ell^2$",
         ha="center",
         va="center",
         fontsize=8.5,

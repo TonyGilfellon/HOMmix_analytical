@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import matplotlib.pyplot as plt
-from matplotlib.patches import Rectangle
+from matplotlib.patches import ConnectionPatch, Rectangle
 import numpy as np
 
 
@@ -82,9 +82,9 @@ HISTOGRAM_ALPHA = 0.25
 # PRAB one-column publication layout. All plots intentionally use the same
 # physical dimensions so they can be inserted without inconsistent scaling.
 PRAB_FIGSIZE = (3.35, 2.65)
-AXIS_LABEL_FONTSIZE = 9.0
-TICK_LABEL_FONTSIZE = 8.0
-LEGEND_FONTSIZE = 4.0
+AXIS_LABEL_FONTSIZE = 11.0
+TICK_LABEL_FONTSIZE = 10.0
+LEGEND_FONTSIZE = 10
 LEGEND_MARKERSCALE = 0.6
 ZOOM_LABEL_FONTSIZE = 7.0
 
@@ -110,6 +110,20 @@ ZOOM_BOX_LINE_WIDTH = 0.9
 HISTOGRAM_EDGE_WIDTH = 1.4
 LEGEND_FRAME_WIDTH = 0.7
 SPINE_LINE_WIDTH = 0.7
+
+# Three-panel histogram typography.
+COMPOSITE_AXIS_LABEL_FONTSIZE = 13.0
+COMPOSITE_TICK_FONTSIZE = 11.0
+COMPOSITE_LEGEND_FONTSIZE = 9.0
+COMPOSITE_INSET_FONTSIZE = 13.0
+
+# Overall-plus-zoom two-panel R_total figure.
+RTOTAL_TWO_PANEL_FIGSIZE = (10.2, 4.2)
+RTOTAL_TWO_PANEL_AXIS_LABEL_FONTSIZE = 14.0
+RTOTAL_TWO_PANEL_TICK_FONTSIZE = 11.0
+RTOTAL_TWO_PANEL_LEGEND_FONTSIZE = 11.0
+RTOTAL_TWO_PANEL_ZOOM_LABEL_FONTSIZE = 10.0
+RTOTAL_TWO_PANEL_MARKER_SCALE = 1.15
 
 # -----------------------------------------------------------------------------
 # Basic helpers
@@ -810,7 +824,7 @@ def _metric_legend_symbol(metric_key: str) -> str:
 
 def _fom_legend_label(base_label: str, metric_key: str) -> str:
     symbol = _metric_legend_symbol(metric_key)
-    return rf"{base_label} $R_{{\mathrm{{total}},{symbol}}}$"
+    return rf"{base_label} $R_{symbol}$"
 
 def _plot_hollow_markers(
     ax: Any,
@@ -963,19 +977,19 @@ def _write_combined_rtotal_log_plot(
     )
 
     ax.set_xlabel(r"$\ell$", fontsize=AXIS_LABEL_FONTSIZE)
-    ax.set_ylabel(r"$R_{\mathrm{total}}$", fontsize=AXIS_LABEL_FONTSIZE)
+    ax.set_ylabel(r"$R_{K}$", fontsize=AXIS_LABEL_FONTSIZE)
     ax.set_yscale("log")
     ax.axhline(
         1.0,
         color=REFERENCE_COLOUR,
         linestyle="--",
         linewidth=REFERENCE_LINE_WIDTH,
-        label=r"$R_{\mathrm{total}}=1$",
+        label=r"$R_{K}=1$",
         zorder=1,
     )
     ax.grid(True, which="both", alpha=0.3)
     ax.legend(
-        loc="lower right",
+        loc="lower left",
         frameon=True,
         framealpha=1.0,
         facecolor="white",
@@ -990,15 +1004,242 @@ def _write_combined_rtotal_log_plot(
 
     output_file = (
         output_root
-        / "homotypic_and_heterotypic_ell_vs_Rtotal_log.png"
+        / "homotypic_and_heterotypic_ell_vs_Rtotal_log.pdf"
     )
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_file, bbox_inches="tight", dpi=dpi, format="png")
+    fig.savefig(output_file, bbox_inches="tight", dpi=dpi, format="pdf")
     plt.close(fig)
     print(f"Wrote: {output_file}")
     print(
         f"  plotted points: {count}; "
         "cut-off=family-specific; y-scale=log; FoM=R_total"
+    )
+    return output_file
+
+
+
+def _rk_legend_label(base_label: str, metric_key: str) -> str:
+    """Return the compact R_K notation used only by the two-panel figure."""
+    symbol = _metric_legend_symbol(metric_key)
+    return rf"{base_label} $R_{{{symbol}}}$"
+
+
+def _plot_rtotal_groups_on_axis(
+    ax: Any,
+    *,
+    combined_groups: list[tuple[list[dict[str, Any]], str, str, str]],
+    cutoffs: dict[str, float],
+    zoom_bounds: tuple[float, float, float, float] | None = None,
+    marker_scale: float = 1.0,
+) -> int:
+    """Plot retained R_K groups on a supplied axis."""
+    count = 0
+
+    for group_results, metric_key, marker, label_color in combined_groups:
+        label, colour = label_color.split("|||", 1)
+        points: list[tuple[float, float]] = []
+
+        for result in group_results:
+            point = rtotal_plot_point(
+                result,
+                metric_key,
+                metric_cutoff=cutoffs[metric_key],
+            )
+            if point is None:
+                continue
+
+            ell, r_value = point
+            if zoom_bounds is not None:
+                ell_min, ell_max, r_min, r_max = zoom_bounds
+                if not (
+                    ell_min <= ell <= ell_max
+                    and r_min <= r_value <= r_max
+                ):
+                    continue
+
+            # Display x as the percentage deviation from the design length:
+            #     100 * (ell - 1)
+            # Keep all selection/zoom filtering above in the original ell coordinate.
+            ell_percent = 100.0 * (ell - 1.0)
+            points.append((ell_percent, r_value))
+
+        if not points:
+            continue
+
+        points.sort(key=lambda item: item[0])
+        x_values, y_values = zip(*points)
+        _plot_hollow_markers(
+            ax,
+            x_values,
+            y_values,
+            marker=marker,
+            label=_rk_legend_label(label, metric_key),
+            color=colour,
+            markersize=DEFAULT_MARKER_SIZE * marker_scale,
+            markeredgewidth=DEFAULT_MARKER_EDGE_WIDTH * marker_scale,
+        )
+        count += len(points)
+
+    return count
+
+
+def _write_combined_rtotal_overall_and_zoom_log_plot(
+    *,
+    combined_groups: list[tuple[list[dict[str, Any]], str, str, str]],
+    cutoffs: dict[str, float],
+    output_root: Path,
+    ell_min: float,
+    ell_max: float,
+    rtotal_min: float,
+    rtotal_max: float,
+    dpi: int,
+) -> Path:
+    """Write the full logarithmic plot at left and its logarithmic zoom at right."""
+
+    # Left: overall population. Right: zoom.
+    fig, (ax_overall, ax_zoom) = plt.subplots(
+        1,
+        2,
+        figsize=RTOTAL_TWO_PANEL_FIGSIZE,
+        gridspec_kw={"width_ratios": [1.18, 1.0]},
+    )
+
+    overall_count = _plot_rtotal_groups_on_axis(
+        ax_overall,
+        combined_groups=combined_groups,
+        cutoffs=cutoffs,
+        marker_scale=RTOTAL_TWO_PANEL_MARKER_SCALE,
+    )
+    zoom_count = _plot_rtotal_groups_on_axis(
+        ax_zoom,
+        combined_groups=combined_groups,
+        cutoffs=cutoffs,
+        zoom_bounds=(ell_min, ell_max, rtotal_min, rtotal_max),
+        marker_scale=RTOTAL_TWO_PANEL_MARKER_SCALE,
+    )
+
+    for ax in (ax_zoom, ax_overall):
+        ax.set_yscale("log")
+        ax.axhline(
+            1.0,
+            color=REFERENCE_COLOUR,
+            linestyle="--",
+            linewidth=REFERENCE_LINE_WIDTH,
+            label=r"$R_K=1$",
+            zorder=1,
+        )
+        ax.set_xlabel(
+            r"$\ell-1$ [%]",
+            fontsize=RTOTAL_TWO_PANEL_AXIS_LABEL_FONTSIZE,
+        )
+        ax.grid(True, which="both", alpha=0.3)
+        _apply_fine_plot_styling(ax)
+        ax.tick_params(
+            axis="both",
+            labelsize=RTOTAL_TWO_PANEL_TICK_FONTSIZE,
+        )
+
+    ax_overall.set_ylabel(
+        r"$R_K$",
+        fontsize=RTOTAL_TWO_PANEL_AXIS_LABEL_FONTSIZE,
+    )
+    ell_percent_min = 100.0 * (ell_min - 1.0)
+    ell_percent_max = 100.0 * (ell_max - 1.0)
+    ax_zoom.set_xlim(ell_percent_min, ell_percent_max)
+    ax_zoom.set_ylim(rtotal_min, rtotal_max)
+
+    # Explicit integer tick labels for the left-hand zoom panel.
+    ax_zoom.set_yticks([1, 2, 3, 4, 5, 6])
+    ax_zoom.set_yticklabels(
+        ["1", "2", "3", "4", "5", "6"],
+        fontsize=RTOTAL_TWO_PANEL_TICK_FONTSIZE,
+    )
+
+    zoom_rectangle = Rectangle(
+        (ell_percent_min, rtotal_min),
+        ell_percent_max - ell_percent_min,
+        rtotal_max - rtotal_min,
+        fill=False,
+        edgecolor=ZOOM_BOX_COLOUR,
+        linestyle="--",
+        linewidth=1.2,
+        zorder=2,
+    )
+    ax_overall.add_patch(zoom_rectangle)
+    # Connect the right-hand corners of the rectangle in the overall panel
+    # to the left-hand bounds of the right zoom panel.
+    for source_y, target_y in (
+        (rtotal_min, rtotal_min),
+        (rtotal_max, rtotal_max),
+    ):
+        connector = ConnectionPatch(
+            xyA=(ell_percent_max, source_y),
+            coordsA=ax_overall.transData,
+            xyB=(ell_percent_min, target_y),
+            coordsB=ax_zoom.transData,
+            color=ZOOM_BOX_COLOUR,
+            linestyle="--",
+            linewidth=0.9,
+            alpha=0.75,
+            clip_on=False,
+            zorder=20,
+        )
+        fig.add_artist(connector)
+
+    # Use one enlarged legend in the left-hand overall panel.
+    handles, labels = ax_overall.get_legend_handles_labels()
+    unique: dict[str, Any] = {}
+    for handle, label in zip(handles, labels):
+        unique.setdefault(label, handle)
+
+    legend = ax_overall.legend(
+        unique.values(),
+        unique.keys(),
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.015),
+        ncol=3,
+        frameon=True,
+        framealpha=1.0,
+        facecolor="white",
+        edgecolor="black",
+        fontsize=RTOTAL_TWO_PANEL_LEGEND_FONTSIZE,
+        markerscale=1.15,
+        columnspacing=1.15,
+        handletextpad=0.45,
+        borderpad=0.6,
+    )
+    _style_legend_frame(legend)
+    legend.set_zorder(30)
+
+    # The connectors are drawn above axes content but below the opaque
+    # legend, using connector zorder=20 and legend zorder=30.
+    fig.subplots_adjust(
+        left=0.085,
+        right=0.985,
+        bottom=0.16,
+        top=0.97,
+        wspace=0.30,
+    )
+
+    output_file = (
+        output_root
+        / "homotypic_and_heterotypic_ell_vs_RK_overall_and_zoom_log.pdf"
+    )
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(
+        output_file,
+        bbox_inches="tight",
+        dpi=dpi,
+        format="pdf",
+    )
+    plt.close(fig)
+
+    print(f"Wrote: {output_file}")
+    print(
+        f"  overall points={overall_count}; zoom points={zoom_count}; "
+        f"zoom ell=[{ell_min}, {ell_max}] "
+        f"({ell_percent_min:.1f}% to {ell_percent_max:.1f}% in ell-1); "
+        f"zoom R_K=[{rtotal_min}, {rtotal_max}]"
     )
     return output_file
 
@@ -1121,13 +1362,13 @@ def _write_combined_rtotal_zoom_plot(
     ax.set_ylim(rtotal_min, rtotal_max)
     ax.set_yscale(y_scale)
     ax.set_xlabel(r"$\ell$", fontsize=AXIS_LABEL_FONTSIZE)
-    ax.set_ylabel(r"$R_{\mathrm{total}}$", fontsize=AXIS_LABEL_FONTSIZE)
+    ax.set_ylabel(r"$R_{K}$", fontsize=AXIS_LABEL_FONTSIZE)
     ax.axhline(
         1.0,
         color=REFERENCE_COLOUR,
         linestyle="--",
         linewidth=REFERENCE_LINE_WIDTH,
-        label=r"$R_{\mathrm{total}}=1$",
+        label=r"$R_{K}=1$",
         zorder=1,
     )
     ax.grid(True, which="both", alpha=0.3)
@@ -1146,10 +1387,10 @@ def _write_combined_rtotal_zoom_plot(
 
     output_file = (
         output_root
-        / f"homotypic_and_heterotypic_ell_vs_Rtotal_zoom_{y_scale}.png"
+        / f"homotypic_and_heterotypic_ell_vs_Rtotal_zoom_{y_scale}.pdf"
     )
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_file, bbox_inches="tight", dpi=dpi, format="png")
+    fig.savefig(output_file, bbox_inches="tight", dpi=dpi, format="pdf")
     plt.close(fig)
     print(f"Wrote: {output_file}")
     print(
@@ -1201,10 +1442,10 @@ def _write_rtotal_histogram(
     )
 
     ax.set_xscale(rtotal_scale)
-    ax.set_xlabel(r"$R_{\mathrm{total}}$", fontsize=AXIS_LABEL_FONTSIZE)
+    ax.set_xlabel(r"$R_{K}$", fontsize=AXIS_LABEL_FONTSIZE)
     ax.set_ylabel("Crossing count", fontsize=AXIS_LABEL_FONTSIZE)
     ax.axvline(1.0, color=REFERENCE_COLOUR, linestyle="--", linewidth=REFERENCE_LINE_WIDTH,
-               label=r"$R_{\mathrm{total}}=1$")
+               label=r"$R_{K}=1$")
     ax.grid(True, which="both", alpha=0.3)
     ax.legend(loc="best", frameon=True, framealpha=1.0,
               facecolor="white", edgecolor="black", fontsize=LEGEND_FONTSIZE,
@@ -1214,9 +1455,9 @@ def _write_rtotal_histogram(
     _style_legend_frame(legend)
     fig.tight_layout()
 
-    output_file = output_root / f"homotypic_and_heterotypic_Rtotal_histogram_{rtotal_scale}.png"
+    output_file = output_root / f"homotypic_and_heterotypic_Rtotal_histogram_{rtotal_scale}.pdf"
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_file, bbox_inches="tight", dpi=dpi, format="png")
+    fig.savefig(output_file, bbox_inches="tight", dpi=dpi, format="pdf")
     plt.close(fig)
     print(f"Wrote: {output_file}")
     print(
@@ -1295,15 +1536,249 @@ def _write_ell_histogram(
     _style_legend_frame(legend)
     fig.tight_layout()
 
-    output_file = output_root / "homotypic_and_heterotypic_ell_histogram_linear.png"
+    output_file = output_root / "homotypic_and_heterotypic_ell_histogram_linear.pdf"
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_file, bbox_inches="tight", dpi=dpi, format="png")
+    fig.savefig(output_file, bbox_inches="tight", dpi=dpi, format="pdf")
     plt.close(fig)
     print(f"Wrote: {output_file}")
     print(
         f"  histogram entries: homotypic={len(homotypic_ell)}, "
         f"heterotypic={len(heterotypic_ell)}; shared bins={n_bins}"
     )
+    return output_file
+
+
+
+def _write_ell_and_rtotal_histogram_two_panel(
+    *,
+    homotypic_rtotal: list[float],
+    heterotypic_rtotal: list[float],
+    homotypic_ell: list[float],
+    heterotypic_ell: list[float],
+    output_root: Path,
+    ell_n_bins: int,
+    rtotal_n_bins: int,
+    dpi: int,
+) -> Path:
+    """
+    Write a two-panel histogram figure containing:
+
+      left:  linear 100*(ell - 1) [%] histogram;
+      right: logarithmic R_total histogram.
+
+    The binning and visual styling match the corresponding standalone plots.
+    """
+
+    # Convert ell to percentage deviation from the design value ell = 1.
+    homotypic_ell_percent = [
+        100.0 * (value - 1.0)
+        for value in homotypic_ell
+        if math.isfinite(value)
+    ]
+    heterotypic_ell_percent = [
+        100.0 * (value - 1.0)
+        for value in heterotypic_ell
+        if math.isfinite(value)
+    ]
+
+    all_ell_percent = (
+        homotypic_ell_percent
+        + heterotypic_ell_percent
+    )
+
+    if not all_ell_percent:
+        raise ValueError(
+            "No finite ell values are available for histogramming."
+        )
+    if ell_n_bins < 1:
+        raise ValueError(
+            "The ell histogram bin count must be at least 1."
+        )
+    if rtotal_n_bins < 1:
+        raise ValueError(
+            "The R_total histogram bin count must be at least 1."
+        )
+
+    ell_minimum = min(all_ell_percent)
+    ell_maximum = max(all_ell_percent)
+
+    if ell_minimum == ell_maximum:
+        ell_minimum -= 5.0
+        ell_maximum += 5.0
+
+    ell_bins = np.linspace(
+        ell_minimum,
+        ell_maximum,
+        ell_n_bins + 1,
+    )
+
+    rtotal_bins = _shared_histogram_bins(
+        homotypic_rtotal + heterotypic_rtotal,
+        scale="log",
+        n_bins=rtotal_n_bins,
+    )
+
+    fig, (ax_ell, ax_rtotal) = plt.subplots(
+        1,
+        2,
+        figsize=(10.2, 4.2),
+    )
+
+    # ------------------------------------------------------------------
+    # Left panel: 100*(ell - 1) [%] histogram.
+    # ------------------------------------------------------------------
+    ax_ell.hist(
+        heterotypic_ell_percent,
+        bins=ell_bins,
+        histtype="stepfilled",
+        alpha=HISTOGRAM_ALPHA,
+        label=f"Heterotypic (n={len(heterotypic_ell_percent)})",
+        edgecolor=HETEROTYPIC_COLOUR,
+        facecolor=HETEROTYPIC_COLOUR,
+        linewidth=HISTOGRAM_EDGE_WIDTH,
+    )
+
+    ax_ell.hist(
+        homotypic_ell_percent,
+        bins=ell_bins,
+        histtype="stepfilled",
+        alpha=HISTOGRAM_ALPHA,
+        label=f"Homotypic (n={len(homotypic_ell_percent)})",
+        edgecolor=HOMOTYPIC_COLOUR,
+        facecolor=HOMOTYPIC_COLOUR,
+        linewidth=HISTOGRAM_EDGE_WIDTH,
+    )
+
+    # ell = 1 corresponds to 0% deviation.
+    ax_ell.axvline(
+        0.0,
+        color=REFERENCE_COLOUR,
+        linestyle="--",
+        linewidth=REFERENCE_LINE_WIDTH,
+        label=r"$\ell-1=0$",
+        zorder=3,
+    )
+
+    ax_ell.set_xlabel(
+        r"$\ell-1$ [%]",
+        fontsize=AXIS_LABEL_FONTSIZE,
+    )
+    ax_ell.set_ylabel(
+        "Crossing count",
+        fontsize=AXIS_LABEL_FONTSIZE,
+    )
+    ax_ell.grid(
+        True,
+        which="both",
+        alpha=0.3,
+    )
+
+    ell_legend = ax_ell.legend(
+        loc="upper right",
+        frameon=True,
+        framealpha=1.0,
+        facecolor="white",
+        edgecolor="black",
+        fontsize=LEGEND_FONTSIZE,
+        markerscale=LEGEND_MARKERSCALE,
+    )
+
+    _apply_fine_plot_styling(ax_ell)
+    _style_legend_frame(ell_legend)
+
+    # ------------------------------------------------------------------
+    # Right panel: logarithmic R_total histogram.
+    # ------------------------------------------------------------------
+    ax_rtotal.hist(
+        heterotypic_rtotal,
+        bins=rtotal_bins,
+        histtype="stepfilled",
+        alpha=HISTOGRAM_ALPHA,
+        label=f"Heterotypic (n={len(heterotypic_rtotal)})",
+        edgecolor=HETEROTYPIC_COLOUR,
+        facecolor=HETEROTYPIC_COLOUR,
+        linewidth=HISTOGRAM_EDGE_WIDTH,
+    )
+
+    ax_rtotal.hist(
+        homotypic_rtotal,
+        bins=rtotal_bins,
+        histtype="stepfilled",
+        alpha=HISTOGRAM_ALPHA,
+        label=f"Homotypic (n={len(homotypic_rtotal)})",
+        edgecolor=HOMOTYPIC_COLOUR,
+        facecolor=HOMOTYPIC_COLOUR,
+        linewidth=HISTOGRAM_EDGE_WIDTH,
+    )
+
+    ax_rtotal.set_xscale("log")
+
+    ax_rtotal.axvline(
+        1.0,
+        color=REFERENCE_COLOUR,
+        linestyle="--",
+        linewidth=REFERENCE_LINE_WIDTH,
+        label=r"$R_{K}=1$",
+        zorder=3,
+    )
+
+    ax_rtotal.set_xlabel(
+        r"$R_{K}$",
+        fontsize=AXIS_LABEL_FONTSIZE,
+    )
+    ax_rtotal.set_ylabel(
+        "Crossing count",
+        fontsize=AXIS_LABEL_FONTSIZE,
+    )
+    ax_rtotal.grid(
+        True,
+        which="both",
+        alpha=0.3,
+    )
+
+    rtotal_legend = ax_rtotal.legend(
+        loc="upper left",
+        frameon=True,
+        framealpha=1.0,
+        facecolor="white",
+        edgecolor="black",
+        fontsize=LEGEND_FONTSIZE,
+        markerscale=LEGEND_MARKERSCALE,
+    )
+
+    _apply_fine_plot_styling(ax_rtotal)
+    _style_legend_frame(rtotal_legend)
+
+    fig.tight_layout()
+
+    output_file = (
+        output_root
+        / "homotypic_and_heterotypic_ell_linear_and_Rtotal_log_histograms_two_panel.pdf"
+    )
+
+    output_file.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    fig.savefig(
+        output_file,
+        bbox_inches="tight",
+        dpi=dpi,
+        format="pdf",
+    )
+
+    plt.close(fig)
+
+    print(f"Wrote: {output_file}")
+    print(
+        "  two-panel histograms: "
+        f"ell homotypic={len(homotypic_ell_percent)}, "
+        f"ell heterotypic={len(heterotypic_ell_percent)}, "
+        f"R_total homotypic={len(homotypic_rtotal)}, "
+        f"R_total heterotypic={len(heterotypic_rtotal)}"
+    )
+
     return output_file
 
 
@@ -1504,10 +1979,10 @@ def _write_homotypic_crossing_type_rk_histogram(
     output_file = (
         output_root
         / RK_HISTOGRAM_SUBDIRECTORY
-        / f"{info['label'].replace('-', '_')}_RK_histogram_{rtotal_scale}.png"
+        / f"{info['label'].replace('-', '_')}_RK_histogram_{rtotal_scale}.pdf"
     )
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_file, bbox_inches="tight", dpi=dpi, format="png")
+    fig.savefig(output_file, bbox_inches="tight", dpi=dpi, format="pdf")
     plt.close(fig)
 
     print(f"Wrote: {output_file}")
@@ -1600,10 +2075,10 @@ def _write_heterotypic_crossing_type_rk_histogram(
     output_file = (
         output_root
         / RK_HISTOGRAM_SUBDIRECTORY
-        / f"{info['label'].replace('-', '_')}_RK_histogram_{rtotal_scale}.png"
+        / f"{info['label'].replace('-', '_')}_RK_histogram_{rtotal_scale}.pdf"
     )
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_file, bbox_inches="tight", dpi=dpi, format="png")
+    fig.savefig(output_file, bbox_inches="tight", dpi=dpi, format="pdf")
     plt.close(fig)
 
     print(f"Wrote: {output_file}")
@@ -1751,7 +2226,7 @@ def _write_homotypic_rk_histogram_composite(
         ax.set_xscale(rtotal_scale)
         ax.set_xlabel(
             x_labels[family_m],
-            fontsize=AXIS_LABEL_FONTSIZE,
+            fontsize=COMPOSITE_AXIS_LABEL_FONTSIZE,
         )
         ax.set_yticks([0, 1, 2, 3])
         ax.set_ylim(0, 3.15)
@@ -1765,27 +2240,33 @@ def _write_homotypic_rk_histogram_composite(
             transform=ax.transAxes,
             ha="left",
             va="top",
-            fontsize=AXIS_LABEL_FONTSIZE,
+            fontsize=COMPOSITE_AXIS_LABEL_FONTSIZE,
             bbox=inset_box_style,
             zorder=5,
         )
 
     axes[0].set_ylabel(
         r"$N$",
-        fontsize=AXIS_LABEL_FONTSIZE,
+        fontsize=COMPOSITE_AXIS_LABEL_FONTSIZE,
     )
+
+    for ax in axes:
+        ax.tick_params(
+            axis="both",
+            labelsize=COMPOSITE_TICK_FONTSIZE,
+        )
 
     output_file = (
         output_root
         / RK_HISTOGRAM_SUBDIRECTORY
-        / f"homotypic_RK_histograms_3_panel_{rtotal_scale}.png"
+        / f"homotypic_RK_histograms_3_panel_{rtotal_scale}.pdf"
     )
     output_file.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(
         output_file,
         bbox_inches="tight",
         dpi=dpi,
-        format="png",
+        format="pdf",
     )
     plt.close(fig)
 
@@ -1824,10 +2305,7 @@ def _write_heterotypic_rk_histogram_composite(
         constrained_layout=True,
     )
 
-    composite_legend_fontsize = max(
-        LEGEND_FONTSIZE + 2.0,
-        6.0,
-    )
+    composite_legend_fontsize = COMPOSITE_LEGEND_FONTSIZE
 
     for ax, pair_type in zip(axes, pair_types):
         info = HETEROTYPIC_PLOT_INFO[pair_type]
@@ -1878,15 +2356,15 @@ def _write_heterotypic_rk_histogram_composite(
         ax.set_xscale(rtotal_scale)
         ax.set_xlabel(
             r"$R_K$",
-            fontsize=AXIS_LABEL_FONTSIZE,
+            fontsize=COMPOSITE_AXIS_LABEL_FONTSIZE,
         )
-        ax.set_yticks([0, 2, 4, 6, 8, 10, 11])
-        ax.set_ylim(0, 11.4)
+        ax.set_yticks([0, 2, 4, 6, 8, 10, 12])
+        ax.set_ylim(0, 12.0)
         ax.grid(True, which="both", alpha=0.3)
         _apply_fine_plot_styling(ax)
 
         legend = ax.legend(
-            loc="best",
+            loc="upper left",
             frameon=True,
             framealpha=1.0,
             facecolor="white",
@@ -1898,20 +2376,26 @@ def _write_heterotypic_rk_histogram_composite(
 
     axes[0].set_ylabel(
         r"$N$",
-        fontsize=AXIS_LABEL_FONTSIZE,
+        fontsize=COMPOSITE_AXIS_LABEL_FONTSIZE,
     )
+
+    for ax in axes:
+        ax.tick_params(
+            axis="both",
+            labelsize=COMPOSITE_TICK_FONTSIZE,
+        )
 
     output_file = (
         output_root
         / RK_HISTOGRAM_SUBDIRECTORY
-        / f"heterotypic_RK_histograms_3_panel_{rtotal_scale}.png"
+        / f"heterotypic_RK_histograms_3_panel_{rtotal_scale}.pdf"
     )
     output_file.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(
         output_file,
         bbox_inches="tight",
         dpi=dpi,
-        format="png",
+        format="pdf",
     )
     plt.close(fig)
 
@@ -2082,8 +2566,8 @@ def _write_crossing_type_rk_statistics_table(
                 row["crossing_type"],
                 row["distribution"],
                 str(len(values)),
-                fmt_fixed(mean_value, 4),
-                fmt_fixed(sd_value, 4),
+                fmt_fixed(mean_value, 1),
+                fmt_fixed(sd_value, 1),
             ]) + r" \\"
         )
 
@@ -2147,7 +2631,7 @@ def _format_caption_stat(value: float) -> str:
 
 
 def _latex_figure_filename(crossing_label: str, rtotal_scale: str) -> str:
-    return f"{crossing_label.replace('-', '_')}_RK_histogram_{rtotal_scale}.png"
+    return f"{crossing_label.replace('-', '_')}_RK_histogram_{rtotal_scale}.pdf"
 
 
 def _write_crossing_type_rk_figures_tex(
@@ -2390,7 +2874,7 @@ def _write_rk_summary_statistic_histogram(
     fig.tight_layout()
     output_file = output_root / RK_HISTOGRAM_SUBDIRECTORY / output_filename
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_file, bbox_inches="tight", dpi=dpi, format="png")
+    fig.savefig(output_file, bbox_inches="tight", dpi=dpi, format="pdf")
     plt.close(fig)
     print(f"Wrote: {output_file}")
     print(f"  statistic={statistic_name}; entries={finite_values.size}; bins={n_bins}")
@@ -2602,7 +3086,7 @@ def _write_rk_mean_vs_standard_deviation_plot(
     output_file = (
         output_root
         / RK_HISTOGRAM_SUBDIRECTORY
-        / "crossing_type_RK_mean_vs_sample_standard_deviation.png"
+        / "crossing_type_RK_mean_vs_sample_standard_deviation.pdf"
     )
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
@@ -2611,7 +3095,7 @@ def _write_rk_mean_vs_standard_deviation_plot(
         output_file,
         bbox_inches="tight",
         dpi=dpi,
-        format="png",
+        format="pdf",
     )
     plt.close(fig)
 
@@ -2646,7 +3130,7 @@ def _write_rk_summary_statistics_plots(
             values=means,
             statistic_name="sample means",
             x_label=r"Sample mean, $\bar{R}_K$",
-            output_filename="crossing_type_RK_mean_histogram_linear.png",
+            output_filename="crossing_type_RK_mean_histogram_linear.pdf",
             output_root=output_root,
             n_bins=n_bins,
             dpi=dpi,
@@ -2655,7 +3139,7 @@ def _write_rk_summary_statistics_plots(
             values=sample_sds,
             statistic_name="sample standard deviations",
             x_label=r"Sample standard deviation, $s_{R_K}$",
-            output_filename="crossing_type_RK_sample_standard_deviation_histogram_linear.png",
+            output_filename="crossing_type_RK_sample_standard_deviation_histogram_linear.pdf",
             output_root=output_root,
             n_bins=n_bins,
             dpi=dpi,
@@ -2828,10 +3312,10 @@ def _write_crossing_type_rk_box_plot(
     output_file = (
         output_root
         / RK_HISTOGRAM_SUBDIRECTORY
-        / f"crossing_type_RK_box_and_whisker_{y_scale}.png"
+        / f"crossing_type_RK_box_and_whisker_{y_scale}.pdf"
     )
     output_file.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_file, bbox_inches="tight", dpi=dpi, format="png")
+    fig.savefig(output_file, bbox_inches="tight", dpi=dpi, format="pdf")
     plt.close(fig)
 
     print(f"Wrote: {output_file}")
@@ -2922,6 +3406,16 @@ def write_rtotal_plots(
             y_scale="log",
             dpi=dpi,
         ),
+        _write_combined_rtotal_overall_and_zoom_log_plot(
+            combined_groups=combined_groups,
+            cutoffs=cutoffs,
+            output_root=output_root,
+            ell_min=rtotal_zoom_ell_min,
+            ell_max=rtotal_zoom_ell_max,
+            rtotal_min=rtotal_zoom_min,
+            rtotal_max=rtotal_zoom_max,
+            dpi=dpi,
+        ),
         _write_rtotal_histogram(
             homotypic_rtotal=homotypic_rtotal,
             heterotypic_rtotal=heterotypic_rtotal,
@@ -2935,6 +3429,16 @@ def write_rtotal_plots(
             heterotypic_ell=heterotypic_ell,
             output_root=output_root,
             n_bins=ell_histogram_n_bins,
+            dpi=dpi,
+        ),
+        _write_ell_and_rtotal_histogram_two_panel(
+            homotypic_rtotal=homotypic_rtotal,
+            heterotypic_rtotal=heterotypic_rtotal,
+            homotypic_ell=homotypic_ell,
+            heterotypic_ell=heterotypic_ell,
+            output_root=output_root,
+            ell_n_bins=ell_histogram_n_bins,
+            rtotal_n_bins=rtotal_histogram_n_bins,
             dpi=dpi,
         ),
     ]

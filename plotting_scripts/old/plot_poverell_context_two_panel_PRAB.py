@@ -151,7 +151,7 @@ def write_two_panel_p_over_ell_plot(
         axis.grid(True, which="both", linewidth=0.45, alpha=0.35)
         axis.tick_params(which="both", direction="in", top=True, right=True)
 
-    ax_context.set_ylabel(r"Normalised frequency, $\hat{f}=f/f_{010}$")
+    ax_context.set_ylabel(r"Normalised frequency, $\bar{f}=f/f_{010}$")
 
     ax_context.legend(
         loc="best",

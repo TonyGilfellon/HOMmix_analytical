@@ -6119,7 +6119,7 @@ def plot_modes_with_mode_legend_and_crossing_labels_extrap_MonoDiQuad(
     ax.axvline(1.0 + tuning_error, ls="--", color="red", alpha=0.8)
 
     ax.set_xlabel(r"$\ell=2d/\lambda$", fontsize=15)
-    ax.set_ylabel(r"$\hat{f} = f_{mnp}/f_{010}$" if normalised else "f [GHz]", fontsize=15)
+    ax.set_ylabel(r"$\bar{f} = f_{mnp}/f_{010}$" if normalised else "f [GHz]", fontsize=15)
     ax.grid(alpha=0.25)
 
     # --------------------------
@@ -6551,7 +6551,7 @@ def plot_modes_with_mode_legend_and_crossing_labels_extrap_MonoDiQuad_TESLA(
     # ax.axvline(1.0 + tuning_error, ls="--", color="red", alpha=0.8)
 
     ax.set_xlabel(r"$\ell=2d/\lambda$", fontsize=20)
-    ax.set_ylabel(r"$\hat{f} = f_{mnp}/f_{010}$" if normalised else "f [GHz]", fontsize=20)
+    ax.set_ylabel(r"$\bar{f} = f_{mnp}/f_{010}$" if normalised else "f [GHz]", fontsize=20)
     ax.grid(alpha=0.25)
 
     ## --------------------------
@@ -7001,7 +7001,7 @@ def plot_modes_with_mode_legend_and_crossing_labels_extrap_MonoDiQuad_PIPII(
     # ax.axvline(1.0 + tuning_error, ls="--", color="red", alpha=0.8)
 
     ax.set_xlabel(r"$\ell=2d/\lambda$", fontsize=20)
-    ax.set_ylabel(r"$\hat{f} = f_{mnp}/f_{010}$" if normalised else "f [GHz]", fontsize=20)
+    ax.set_ylabel(r"$\bar{f} = f_{mnp}/f_{010}$" if normalised else "f [GHz]", fontsize=20)
     ax.grid(alpha=0.25)
 
     # --------------------------
@@ -7442,7 +7442,7 @@ def plot_modes_with_mode_legend_and_crossing_labels_extrap_MonoDiQuad_3HC(
     # ax.axvline(1.0 + tuning_error, ls="--", color="red", alpha=0.8)
 
     ax.set_xlabel(r"$\ell=2d/\lambda$", fontsize=20)
-    ax.set_ylabel(r"$\hat{f} = f_{mnp}/f_{010}$" if normalised else "f [GHz]", fontsize=20)
+    ax.set_ylabel(r"$\bar{f} = f_{mnp}/f_{010}$" if normalised else "f [GHz]", fontsize=20)
     ax.grid(alpha=0.25)
 
     # --------------------------

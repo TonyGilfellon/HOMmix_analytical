@@ -315,7 +315,7 @@ def plot_l_fhat_plane(
     plane: dict[str, Any],
     out_png: str | Path,
     *,
-    title: str = r"Mode crossings in $(\ell,\hat{f})$",
+    title: str = r"Mode crossings in $(\ell,\bar{f})$",
     xlim: tuple[float, float] | None = None,
     ylim: tuple[float, float] | None = None,
     annotate_crossings: bool = True,
@@ -341,7 +341,7 @@ def plot_l_fhat_plane(
 
     ax.axvline(1.0, ls="--", color="black", alpha=0.4, lw=1.0)
     ax.set_xlabel(r"Length factor $\ell=L/L_0$")
-    ax.set_ylabel(r"Normalised frequency $\hat{f}=f/f_{010}$")
+    ax.set_ylabel(r"Normalised frequency $\bar{f}=f/f_{010}$")
     ax.set_title(title)
     if xlim is not None:
         ax.set_xlim(*xlim)
@@ -380,7 +380,7 @@ def reconstruct_and_plot_l_fhat_plane_from_files(
     crossings = pickle_load(crossing_results_pkl)
     plane = reconstruct_l_fhat_data(data, crossings, f_010=f_010)
     if title is None:
-        title = r"Mode crossings in $(\ell,\hat{f})$"
+        title = r"Mode crossings in $(\ell,\bar{f})$"
     plot_l_fhat_plane(plane, out_png, title=title, annotate_crossings=annotate_crossings)
     if out_crossings_csv is not None:
         write_crossing_points_csv(plane, out_crossings_csv)

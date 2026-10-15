@@ -48,7 +48,7 @@ TABLE_SPECS = {
         label="tab:monopole_enhancement",
         caption=(
             r"Enhancement summary for homotypic monopole crossings. "
-            r"The normalized frequency is $\hat{f}=f/f_{010}$ and "
+            r"The normalized frequency is $\bar{f}=f/f_{010}$ and "
             r"$R_{\max}=\max(M_+,M_-)/\max(M_1,M_2)$. "
             r"The final column is the \texttt{mixed\_max} value from the CSV."
         ),
@@ -260,14 +260,14 @@ def latex_table(spec: FamilyTableSpec, rows: list[list[str]]) -> str:
     if spec.family == "quadrupole":
         lines.append(r"\begin{tabular}{ccccccc}")
         lines.append(
-            r"$E_1$ & $E_2$ & $\ell$ & $\hat{f}$ & metric & $R_{\max}$ & "
+            r"$E_1$ & $E_2$ & $\ell$ & $\bar{f}$ & metric & $R_{\max}$ & "
             + spec.metric_heading
             + r" \\"
         )
     else:
         lines.append(r"\begin{tabular}{cccccc}")
         lines.append(
-            r"$E_1$ & $E_2$ & $\ell$ & $\hat{f}$ & $R_{\max}$ & "
+            r"$E_1$ & $E_2$ & $\ell$ & $\bar{f}$ & $R_{\max}$ & "
             + spec.metric_heading
             + r" \\"
         )
